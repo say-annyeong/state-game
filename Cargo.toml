@@ -1,0 +1,3 @@
+[workspace]
+members = ["state-game-core", "state-game-mod", "state-game-run"]
+resolver = "3"

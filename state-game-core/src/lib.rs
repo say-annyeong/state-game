@@ -1,6 +1,8 @@
 mod policy_graph;
 mod bound;
 
+mod state_game_instruction;
+
 use std::any::Any;
 use std::collections::HashMap;
 

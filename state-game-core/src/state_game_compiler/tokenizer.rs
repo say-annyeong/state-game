@@ -1,11 +1,11 @@
 use std::iter::Peekable;
 use std::str::Chars;
-use crate::state_game_instruction::token::{Position, Token, lookup_keyword, AssignmentToken, OperatorToken, PunctuationToken, SpecialToken};
+use crate::state_game_compiler::token::{Position, Token, lookup_keyword, AssignmentToken, OperatorToken, PunctuationToken, SpecialToken};
 
 #[derive(Debug, Clone)]
 pub struct Tokenizer<'a> {
     input: Peekable<Chars<'a>>,
-    current_pos: usize, // Tracks the byte position in the original input string
+    current_position: usize, // Tracks the byte position in the original input string
     line: usize,
     column: usize,
     // Keep track of the start of the *next* token
@@ -17,7 +17,7 @@ impl<'a> Tokenizer<'a> {
     pub fn new(input: &'a str) -> Self {
         Tokenizer {
             input: input.chars().peekable(),
-            current_pos: 0,
+            current_position: 0,
             line: 1,
             column: 1, // Start column at 1
             start_line: 1,
@@ -29,7 +29,7 @@ impl<'a> Tokenizer<'a> {
     fn next_char(&mut self) -> Option<char> {
         match self.input.next() {
             Some(ch) => {
-                self.current_pos += ch.len_utf8();
+                self.current_position += ch.len_utf8();
                 if ch == '\n' {
                     self.line += 1;
                     self.column = 1;

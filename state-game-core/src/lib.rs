@@ -1,7 +1,9 @@
 mod policy_graph;
 mod bound;
 
+mod state_game_compiler;
 mod state_game_instruction;
+mod state_game_virtual_machine;
 
 use std::any::Any;
 use std::collections::HashMap;
@@ -48,6 +50,31 @@ pub trait ModificationSpecifications {
     fn bound(&self) -> Bound { Bound::empty() }
 }
 
+trait ActionGenerator {
+    fn enumerate(
+        &self,
+        state: &State,
+        out: &mut InputAccumulator<Input>,
+    );
+}
+
+trait Constraint {
+    fn validate(
+        &self,
+        state: &State,
+        input: &Input,
+    ) -> bool;
+}
+
+trait Transition {
+    fn apply(
+        &self,
+        state: &State,
+        input: &Input,
+        ctx: &ExecutionContext,
+    ) -> Option<State>;
+}
+
 pub trait Transition {
     /// Execution order by numeric priority
     /// 1. Lower values run earlier.
@@ -58,7 +85,7 @@ pub trait Transition {
     /// naming rule: snake_case
     fn transition_identifier(&self) -> Identifier;
     /// todo
-    fn transition(&self, state: State) -> Vec<State>;
+    fn transition(&self, state: State, bound: Bound) -> Vec<State>;
 }
 
 pub trait Chooser {

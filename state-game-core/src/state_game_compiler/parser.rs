@@ -3,7 +3,7 @@ use super::abstract_syntax_tree_generator::{
     ImportDeclaration, ImportSource, Literal, MethodDefinition, Program, Statement, StructDefinition,
     TypeAnnotation, UnaryOperator, ExportDeclaration, ImplMethodDefinition, /* other AST nodes */
 };
-use super::token::{AssignmentToken, KeywordToken, OperatorToken, PunctuationToken, SpecialToken, Token, Position, LiteralToken};
+use super::token::{AssignmentToken, KeywordToken, OperatorToken, PunctuationToken, SpecialToken, Token, Position};
 use super::tokenizer::Tokenizer;
 use std::iter::Peekable;
 

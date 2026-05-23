@@ -1,17 +1,19 @@
 use std::collections::HashMap;
+use std::ops::Deref;
 use std::sync::Arc;
 use crossbeam_channel::{Receiver, Sender};
-use crate::instruction_run::instruction::{Functions, Instruction, Literal, Slot};
+use crate::instruction_run::instruction::{Functions, Instruction, Literal, Slot, SpecialFunctions};
 use crate::instruction_run::types::{Type, Value};
 use crate::instruction_run::event::{
     StateChange, TrapReason, VirtualMachineEvent, VirtualMachineLog,
     VirtualMachineLogLevel, VirtualMachineTrap,
 };
-
+use crate::{Identifier, Namespace};
+use crate::instruction_run::types::Value::Option;
 // ── Instruction pointer step ─────────────────────────────────────────────────
 
 enum NextInstructionPointer {
-    /// Advance by N (almost always 1).
+    /// Advance by 1.
     Advance,
     /// Jump to an absolute position (already verified to be in-bounds).
     Goto(usize),
@@ -24,9 +26,9 @@ pub struct VirtualMachine {
     instruction_pointer: usize,
     instructions: Arc<[Instruction]>,
     /// Slot storage. The verifier guarantees every slot is written before it
-    /// is read, so `unwrap()` on a missing slot is a verifier bug, not a
-    /// runtime error.
+    /// is read, so a missing slot is always a verifier bug.
     slots: HashMap<Slot, Arc<Value>>,
+    global_memory: HashMap<(Namespace, Identifier), Arc<Value>>,
 }
 
 impl VirtualMachine {
@@ -39,6 +41,7 @@ impl VirtualMachine {
             instruction_pointer: 0,
             instructions,
             slots: HashMap::new(),
+            global_memory: HashMap::new(),
         }
     }
 
@@ -66,8 +69,8 @@ impl VirtualMachine {
         format!("slot_{slot}")
     }
 
-    /// Read a slot. Panics if the slot is unbound — the verifier must have
-    /// already confirmed every slot is written before it is read.
+    /// Read a slot. Panics if unbound — the verifier must have confirmed every
+    /// slot is written before it is read.
     fn read(&self, slot: Slot) -> Arc<Value> {
         self.slots
             .get(&slot)
@@ -94,7 +97,6 @@ impl VirtualMachine {
             match self.execute(&instr) {
                 Ok(NextInstructionPointer::Advance) => self.instruction_pointer += 1,
                 Ok(NextInstructionPointer::Goto(target)) => {
-                    // The verifier already confirmed every jump target is in-bounds.
                     self.instruction_pointer = target;
                 }
                 Err(trap) => {
@@ -106,9 +108,6 @@ impl VirtualMachine {
         }
 
         self.log(VirtualMachineLogLevel::Info, "Virtual Machine Halt");
-        self.log(VirtualMachineLogLevel::Debug, format!("Instruction: {:?}", self.instructions));
-        self.log(VirtualMachineLogLevel::Debug, format!("instruction_pointer: {}", self.instruction_pointer));
-        self.log(VirtualMachineLogLevel::Debug, format!("slots: {:?}", self.slots));
         self.emit(VirtualMachineEvent::ExecutionFinished);
         Ok(())
     }
@@ -121,7 +120,6 @@ impl VirtualMachine {
     ) -> Result<NextInstructionPointer, VirtualMachineTrap> {
         match instr {
             // ── Bind ──────────────────────────────────────────────────────────
-            // The verifier confirmed the literal is parseable as `type_name`.
             Instruction::Bind { slot, type_name, value } => {
                 let v = parse_literal(type_name, value);
                 self.write(*slot, Arc::new(v));
@@ -129,8 +127,6 @@ impl VirtualMachine {
             }
 
             // ── Call ──────────────────────────────────────────────────────────
-            // The verifier confirmed arity and argument types; we only need to
-            // handle runtime failures (division by zero, out-of-bounds, etc.).
             Instruction::Call { function_name, output, arguments } => {
                 let args: Vec<Arc<Value>> =
                     arguments.iter().map(|s| self.read(*s)).collect();
@@ -145,7 +141,6 @@ impl VirtualMachine {
             }
 
             // ── ConditionalJump ───────────────────────────────────────────────
-            // The verifier confirmed `condition` holds a Boolean.
             Instruction::ConditionalJump {
                 condition,
                 true_target_position,
@@ -163,47 +158,12 @@ impl VirtualMachine {
                 }))
             }
 
-            // ── UnwrapSome ────────────────────────────────────────────────────
-            // The verifier confirmed `input` is Option<_>. Runtime can still
-            // trap on None.
-            Instruction::UnwrapSome { output, input } => {
-                let v = self.read(*input);
-                match &*v {
-                    Value::Option(Some(inner)) => {
-                        self.write(*output, Arc::new(*inner.clone()));
-                        Ok(NextInstructionPointer::Advance)
-                    }
-                    Value::Option(None) => Err(self.trap(TrapReason::UnwrapNone)),
-                    _ => panic!("verifier bug: UnwrapSome on non-Option slot"),
-                }
-            }
-
-            // ── UnwrapOk ──────────────────────────────────────────────────────
-            // The verifier confirmed `input` is Result<_, _>. Runtime can still
-            // trap if the value is Err.
-            Instruction::UnwrapOk { output, input } => {
-                let v = self.read(*input);
-                match &*v {
-                    Value::Result(Ok(inner)) => {
-                        self.write(*output, Arc::new(*inner.clone()));
-                        Ok(NextInstructionPointer::Advance)
-                    }
-                    Value::Result(Err(_)) => Err(self.trap(TrapReason::UnwrapErrOnOk)),
-                    _ => panic!("verifier bug: UnwrapOk on non-Result slot"),
-                }
-            }
-
-            // ── UnwrapErr ─────────────────────────────────────────────────────
-            Instruction::UnwrapErr { output, input } => {
-                let v = self.read(*input);
-                match &*v {
-                    Value::Result(Err(inner)) => {
-                        self.write(*output, Arc::new(*inner.clone()));
-                        Ok(NextInstructionPointer::Advance)
-                    }
-                    Value::Result(Ok(_)) => Err(self.trap(TrapReason::UnwrapOkOnErr)),
-                    _ => panic!("verifier bug: UnwrapErr on non-Result slot"),
-                }
+            Instruction::SpecialCall { function_name, output, arguments } => {
+                let args: Vec<Arc<Value>> =
+                    arguments.iter().map(|s| self.read(*s)).collect();
+                let result = self.special_dispatch(*function_name, &args)?;
+                self.write(*output, Arc::new(result));
+                Ok(NextInstructionPointer::Advance)
             }
         }
     }
@@ -252,10 +212,10 @@ impl VirtualMachine {
             Functions::PowFloat => Ok(Value::Float(float!(args[0]).powf(float!(args[1])))),
 
             // ── Integer comparisons ───────────────────────────────────────────
-            Functions::EqualInteger        => Ok(Value::Boolean(int!(args[0]) == int!(args[1]))),
-            Functions::NotEqualInteger     => Ok(Value::Boolean(int!(args[0]) != int!(args[1]))),
-            Functions::GreaterThanInteger  => Ok(Value::Boolean(int!(args[0]) >  int!(args[1]))),
-            Functions::LessThanInteger     => Ok(Value::Boolean(int!(args[0]) <  int!(args[1]))),
+            Functions::EqualInteger       => Ok(Value::Boolean(int!(args[0]) == int!(args[1]))),
+            Functions::NotEqualInteger    => Ok(Value::Boolean(int!(args[0]) != int!(args[1]))),
+            Functions::GreaterThanInteger => Ok(Value::Boolean(int!(args[0]) >  int!(args[1]))),
+            Functions::LessThanInteger    => Ok(Value::Boolean(int!(args[0]) <  int!(args[1]))),
 
             // ── Float comparisons ─────────────────────────────────────────────
             Functions::GreaterThanFloat => Ok(Value::Boolean(float!(args[0]) > float!(args[1]))),
@@ -268,8 +228,8 @@ impl VirtualMachine {
             Functions::Xor => Ok(Value::Boolean(bool_!(args[0]) ^  bool_!(args[1]))),
 
             // ── String operations ─────────────────────────────────────────────
-            Functions::EqualString   => Ok(Value::Boolean(str_!(args[0]) == str_!(args[1]))),
-            Functions::StringLength  => Ok(Value::Integer(str_!(args[0]).chars().count() as i64)),
+            Functions::EqualString  => Ok(Value::Boolean(str_!(args[0]) == str_!(args[1]))),
+            Functions::StringLength => Ok(Value::Integer(str_!(args[0]).chars().count() as i64)),
             Functions::StringGetChar => {
                 let s   = str_!(args[0]);
                 let idx = int!(args[1]);
@@ -296,7 +256,7 @@ impl VirtualMachine {
                 Ok(v[i].clone())
             }
 
-            // ── Vector init (single-element) ──────────────────────────────────
+            // ── Vector init ───────────────────────────────────────────────────
             Functions::VectorInitInteger
             | Functions::VectorInitFloat
             | Functions::VectorInitString
@@ -323,19 +283,100 @@ impl VirtualMachine {
             | Functions::VectorPopChar
             | Functions::VectorPopBoolean => {
                 let mut v = vec_!(args[0]);
-                let len = v.len();
-                if len == 0 {
+                if v.is_empty() {
                     return Err(self.trap(TrapReason::IndexOutOfBounds { index: -1, length: 0 }));
                 }
                 v.pop();
                 Ok(Value::Vector(v))
+            }
+
+            // ── Option / Result inspection ────────────────────────────────────
+            Functions::IsSome => Ok(Value::Boolean(matches!(&*args[0], Value::Option(Some(_))))),
+            Functions::IsNone => Ok(Value::Boolean(matches!(&*args[0], Value::Option(None)))),
+            Functions::IsOk   => Ok(Value::Boolean(matches!(&*args[0], Value::Result(Ok(_))))),
+            Functions::IsErr  => Ok(Value::Boolean(matches!(&*args[0], Value::Result(Err(_))))),
+
+            // ── UnwrapSome ────────────────────────────────────────────────────
+            // Runtime trap if the value is None.
+            Functions::UnwrapSomeInteger
+            | Functions::UnwrapSomeFloat
+            | Functions::UnwrapSomeString
+            | Functions::UnwrapSomeChar
+            | Functions::UnwrapSomeBoolean => {
+                match &*args[0] {
+                    Value::Option(Some(inner)) => Ok(*inner.clone()),
+                    Value::Option(None)        => Err(self.trap(TrapReason::UnwrapNone)),
+                    _                          => panic!("verifier bug: UnwrapSome on non-Option"),
+                }
+            }
+
+            // ── UnwrapOk ──────────────────────────────────────────────────────
+            // Runtime trap if the value is Err.
+            Functions::UnwrapOkInteger
+            | Functions::UnwrapOkFloat
+            | Functions::UnwrapOkString
+            | Functions::UnwrapOkChar
+            | Functions::UnwrapOkBoolean => {
+                match &*args[0] {
+                    Value::Result(Ok(inner))  => Ok(*inner.clone()),
+                    Value::Result(Err(_))     => Err(self.trap(TrapReason::UnwrapErrOnOk)),
+                    _                         => panic!("verifier bug: UnwrapOk on non-Result"),
+                }
+            }
+
+            // ── UnwrapErr ─────────────────────────────────────────────────────
+            // Runtime trap if the value is Ok.
+            Functions::UnwrapErrInteger
+            | Functions::UnwrapErrFloat
+            | Functions::UnwrapErrString
+            | Functions::UnwrapErrChar
+            | Functions::UnwrapErrBoolean => {
+                match &*args[0] {
+                    Value::Result(Err(inner)) => Ok(*inner.clone()),
+                    Value::Result(Ok(_))      => Err(self.trap(TrapReason::UnwrapOkOnErr)),
+                    _                         => panic!("verifier bug: UnwrapErr on non-Result"),
+                }
+            }
+        }
+    }
+
+    fn special_dispatch(&mut self, special_functions: SpecialFunctions, arguments: &[Arc<Value>]) -> Result<Value, VirtualMachineTrap> {
+        macro_rules! int   { ($v:expr) => { match &*$v { Value::Integer(n) => *n, _ => panic!("verifier bug") } } }
+        macro_rules! float { ($v:expr) => { match &*$v { Value::Float(f)   => *f, _ => panic!("verifier bug") } } }
+        macro_rules! bool_ { ($v:expr) => { match &*$v { Value::Boolean(b) => *b, _ => panic!("verifier bug") } } }
+        macro_rules! str_  { ($v:expr) => { match &*$v { Value::String(s)  => s.clone(), _ => panic!("verifier bug") } } }
+        macro_rules! vec_  { ($v:expr) => { match &*$v { Value::Vector(v)  => v.clone(), _ => panic!("verifier bug") } } }
+        match special_functions {
+            SpecialFunctions::ReadGlobalMemoryInteger
+            | SpecialFunctions::ReadGlobalMemoryFloat
+            | SpecialFunctions::ReadGlobalMemoryString
+            | SpecialFunctions::ReadGlobalMemoryChar
+            | SpecialFunctions::ReadGlobalMemoryBoolean => {
+                let namespace = str_!(arguments[0]);
+                let identifier = str_!(arguments[1]);
+                let value = self.global_memory.get(&(namespace, identifier)).map(|v| {
+                    Box::new(v.deref().clone())
+                });
+                Ok(Option(value))
+            }
+            SpecialFunctions::WriteGlobalMemoryInteger
+            | SpecialFunctions::WriteGlobalMemoryFloat
+            | SpecialFunctions::WriteGlobalMemoryString
+            | SpecialFunctions::WriteGlobalMemoryChar
+            | SpecialFunctions::WriteGlobalMemoryBoolean => {
+                let namespace = str_!(arguments[0]);
+                let identifier = str_!(arguments[1]);
+                self.global_memory.insert((namespace, identifier), arguments[2].clone());
+                Ok(Value::Void)
+            }
+            SpecialFunctions::GetInstructionPosition => {
+                Ok(Value::Integer(self.instruction_pointer as i64))
             }
         }
     }
 }
 
 // ── Literal conversion ────────────────────────────────────────────────────────
-// Literals already hold typed values, so this is a direct unwrap.
 
 fn parse_literal(ty: &Type, lit: &Literal) -> Value {
     match (ty, lit) {

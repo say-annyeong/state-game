@@ -5,8 +5,8 @@ mod instruction_run;
 use std::any::Any;
 use std::collections::HashMap;
 
-pub type Namespace = &'static str;
-pub type Identifier = &'static str;
+pub type Namespace = String;
+pub type Identifier = String;
 
 pub trait ModificationSpecifications {
     /// Base priority of this specification.

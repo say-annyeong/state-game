@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::sync::Arc;
-use crate::instruction_run::instruction::{FunctionRegistry, FunctionSignature, Functions, Instruction, Literal, Slot};
+use crate::instruction_run::instruction::{FunctionRegistry, FunctionSignature, Functions, Instruction, Literal, Slot, SpecialFunctions};
 use crate::instruction_run::types::Type;
 
 pub const FUNCTION_REGISTRY: FunctionRegistry<{ Functions::COUNT }> = FunctionRegistry {
@@ -49,6 +49,41 @@ pub const FUNCTION_REGISTRY: FunctionRegistry<{ Functions::COUNT }> = FunctionRe
         FunctionSignature { inputs: &[Type::Vector(&Type::String)], outputs: Type::Vector(&Type::String) },                  // VectorPopString
         FunctionSignature { inputs: &[Type::Vector(&Type::Char)], outputs: Type::Vector(&Type::Char) },                      // VectorPopChar
         FunctionSignature { inputs: &[Type::Vector(&Type::Boolean)], outputs: Type::Vector(&Type::Boolean) },                // VectorPopBoolean
+        FunctionSignature { inputs: &[Type::Option(&Type::Any)], outputs: Type::Boolean },                                   // IsSome
+        FunctionSignature { inputs: &[Type::Option(&Type::Any)], outputs: Type::Boolean },                                   // IsNone
+        FunctionSignature { inputs: &[Type::Result(&Type::Any, &Type::Any)], outputs: Type::Boolean },                       // IsOk
+        FunctionSignature { inputs: &[Type::Result(&Type::Any, &Type::Any)], outputs: Type::Boolean },                       // IsErr
+        FunctionSignature { inputs: &[Type::Option(&Type::Integer)], outputs: Type::Integer },                               // UnwrapSomeInteger
+        FunctionSignature { inputs: &[Type::Option(&Type::Float)], outputs: Type::Float },                                   // UnwrapSomeFloat
+        FunctionSignature { inputs: &[Type::Option(&Type::String)], outputs: Type::String },                                 // UnwrapSomeString
+        FunctionSignature { inputs: &[Type::Option(&Type::Char)], outputs: Type::Char },                                     // UnwrapSomeChar
+        FunctionSignature { inputs: &[Type::Option(&Type::Boolean)], outputs: Type::Boolean },                               // UnwrapSomeBoolean
+        FunctionSignature { inputs: &[Type::Result(&Type::Integer, &Type::Any)], outputs: Type::Integer },                   // UnwrapOkInteger
+        FunctionSignature { inputs: &[Type::Result(&Type::Float, &Type::Any)], outputs: Type::Float },                       // UnwrapOkFloat
+        FunctionSignature { inputs: &[Type::Result(&Type::String, &Type::Any)], outputs: Type::String },                     // UnwrapOkString
+        FunctionSignature { inputs: &[Type::Result(&Type::Char, &Type::Any)], outputs: Type::Char },                         // UnwrapOkChar
+        FunctionSignature { inputs: &[Type::Result(&Type::Boolean, &Type::Any)], outputs: Type::Boolean },                   // UnwrapOkBoolean
+        FunctionSignature { inputs: &[Type::Result(&Type::Any, &Type::Integer)], outputs: Type::Integer },                   // UnwrapErrInteger
+        FunctionSignature { inputs: &[Type::Result(&Type::Any, &Type::Float)], outputs: Type::Float },                       // UnwrapErrFloat
+        FunctionSignature { inputs: &[Type::Result(&Type::Any, &Type::String)], outputs: Type::String },                     // UnwrapErrString
+        FunctionSignature { inputs: &[Type::Result(&Type::Any, &Type::Char)], outputs: Type::Char },                         // UnwrapErrChar
+        FunctionSignature { inputs: &[Type::Result(&Type::Any, &Type::Boolean)], outputs: Type::Boolean },                   // UnwrapErrBoolean
+    ]
+};
+
+pub const SPECIAL_FUNCTIONS_REGISTRY: FunctionRegistry<{ SpecialFunctions::COUNT }> = FunctionRegistry {
+    functions: [
+        FunctionSignature { inputs: &[Type::String, Type::String], outputs: Type::Option(&Type::Integer) }, // ReadGlobalMemoryInteger
+        FunctionSignature { inputs: &[Type::String, Type::String], outputs: Type::Option(&Type::Float) },   // ReadGlobalMemoryFloat
+        FunctionSignature { inputs: &[Type::String, Type::String], outputs: Type::Option(&Type::String)},   // ReadGlobalMemoryString
+        FunctionSignature { inputs: &[Type::String, Type::String], outputs: Type::Option(&Type::Char)},     // ReadGlobalMemoryChar
+        FunctionSignature { inputs: &[Type::String, Type::String], outputs: Type::Option(&Type::Boolean)},  // ReadGlobalMemoryBoolean
+        FunctionSignature { inputs: &[Type::String, Type::String, Type::Integer], outputs: Type::Void },    // WriteGlobalMemoryInteger
+        FunctionSignature { inputs: &[Type::String, Type::String, Type::Float], outputs: Type::Void },      // WriteGlobalMemoryFloat
+        FunctionSignature { inputs: &[Type::String, Type::String, Type::String], outputs: Type::Void },     // WriteGlobalMemoryString
+        FunctionSignature { inputs: &[Type::String, Type::String, Type::Char], outputs: Type::Void },       // WriteGlobalMemoryChar
+        FunctionSignature { inputs: &[Type::String, Type::String, Type::Boolean], outputs: Type::Void },    // WriteGlobalMemoryBoolean
+        FunctionSignature { inputs: &[], outputs: Type::Integer },                                          // GetInstructionPosition
     ]
 };
 
@@ -64,10 +99,6 @@ pub enum VerifyError {
     JumpOutOfBounds { ip: usize, target: usize },
     /// The wrong number of arguments was supplied to a Call.
     ArgumentCountMismatch { ip: usize, expected: usize, found: usize },
-    /// UnwrapSome used on a slot that is not Option<_>.
-    NotAnOption { ip: usize, slot: Slot },
-    /// UnwrapOk / UnwrapErr used on a slot that is not Result<_, _>.
-    NotAResult { ip: usize, slot: Slot },
 }
 
 pub struct InstructionVerifier {
@@ -114,7 +145,7 @@ impl InstructionVerifier {
                         for (arg_slot, expected_type) in arguments.iter().zip(sig.inputs.iter()) {
                             match slots.get(arg_slot) {
                                 None => errors.push(VerifyError::UnboundSlot { ip, slot: *arg_slot }),
-                                Some(found_type) if found_type != expected_type => {
+                                Some(found_type) if !type_compatible(found_type, expected_type) => {
                                     errors.push(VerifyError::TypeMismatch {
                                         ip,
                                         slot: *arg_slot,
@@ -158,38 +189,9 @@ impl InstructionVerifier {
                         errors.push(VerifyError::JumpOutOfBounds { ip, target: *false_target_position });
                     }
                 }
-
-                // ── UnwrapSome ──────────────────────────────────────────────
-                Instruction::UnwrapSome { output, input } => {
-                    match slots.get(input) {
-                        None => errors.push(VerifyError::UnboundSlot { ip, slot: *input }),
-                        Some(Type::Option(inner)) => {
-                            slots.insert(*output, (*inner).clone());
-                        }
-                        Some(_) => errors.push(VerifyError::NotAnOption { ip, slot: *input }),
-                    }
-                }
-
-                // ── UnwrapOk ────────────────────────────────────────────────
-                Instruction::UnwrapOk { output, input } => {
-                    match slots.get(input) {
-                        None => errors.push(VerifyError::UnboundSlot { ip, slot: *input }),
-                        Some(Type::Result(ok, _)) => {
-                            slots.insert(*output, (*ok).clone());
-                        }
-                        Some(_) => errors.push(VerifyError::NotAResult { ip, slot: *input }),
-                    }
-                }
-
-                // ── UnwrapErr ───────────────────────────────────────────────
-                Instruction::UnwrapErr { output, input } => {
-                    match slots.get(input) {
-                        None => errors.push(VerifyError::UnboundSlot { ip, slot: *input }),
-                        Some(Type::Result(_, err)) => {
-                            slots.insert(*output, (*err).clone());
-                        }
-                        Some(_) => errors.push(VerifyError::NotAResult { ip, slot: *input }),
-                    }
+                
+                Instruction::SpecialCall { function_name, output, arguments } => {
+                    
                 }
             }
         }
@@ -208,4 +210,35 @@ fn literal_matches_type(literal: &Literal, ty: &Type) -> bool {
         | (Literal::Char(_),    Type::Char)
         | (Literal::String(_),  Type::String)
     )
+}
+
+/// Type compatibility check for function arguments.
+///
+/// `Type::Any` in an expected (registry) position accepts any concrete type:
+///   - `Option<Any>`        accepts any `Option<T>`
+///   - `Result<Any, Any>`   accepts any `Result<T, E>`
+///   - `Result<T, Any>`     accepts `Result<T, E>` where ok-side matches T
+///   - `Result<Any, E>`     accepts `Result<T, E>` where err-side matches E
+///   - bare `Any`           accepts any type
+fn type_compatible(found: &Type, expected: &Type) -> bool {
+    match (found, expected) {
+        // Bare Any wildcard
+        (_, Type::Any) => true,
+        // Option<Any> accepts any Option<_>
+        (Type::Option(_), Type::Option(Type::Any)) => true,
+        // Option<T>: recurse on inner type
+        (Type::Option(f), Type::Option(e)) => type_compatible(f, e),
+        // Result<Any, Any> accepts any Result<_, _>
+        (Type::Result(_, _), Type::Result(Type::Any, Type::Any)) => true,
+        // Result<T, Any>: ok side must match, err side is wildcard
+        (Type::Result(fk, _), Type::Result(ek, Type::Any)) => type_compatible(fk, ek),
+        // Result<Any, E>: err side must match, ok side is wildcard
+        (Type::Result(_, fv), Type::Result(Type::Any, ev)) => type_compatible(fv, ev),
+        // Result<T, E>: recurse on both sides
+        (Type::Result(fk, fv), Type::Result(ek, ev)) => type_compatible(fk, ek) && type_compatible(fv, ev),
+        // Vector<T>: recurse on inner type
+        (Type::Vector(f), Type::Vector(e)) => type_compatible(f, e),
+        // Everything else: exact equality
+        _ => found == expected,
+    }
 }

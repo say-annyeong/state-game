@@ -10,6 +10,19 @@ pub enum Type {
     Option(&'static Type),
     Result(&'static Type, &'static Type),
 
+    /// Only valid in function input positions.
+    ///
+    /// Any accepts every concrete type as an argument.
+    ///
+    /// ConcreteType -> Any     : allowed
+    /// Any -> ConcreteType     : denied
+    ///
+    /// Any must never appear in outputs,
+    /// variable storage, or inferred value types.
+    Any,
+    /// Only valid in function output positions.
+    ///
+    /// Represents the absence of a return value.
     Void
 }
 
@@ -25,5 +38,6 @@ pub enum Value {
     Option(Option<Box<Value>>),
     Result(Result<Box<Value>, Box<Value>>),
 
+    Any,
     Void
 }

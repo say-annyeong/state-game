@@ -26,19 +26,10 @@ pub enum Instruction {
         false_target_position: usize,
     },
 
-    UnwrapSome {
+    SpecialCall {
+        function_name: SpecialFunctions,
         output: Slot,
-        input: Slot, // only Option<Type>
-    },
-
-    UnwrapOk {
-        output: Slot,
-        input: Slot, // only Result<Type, Type>
-    },
-
-    UnwrapErr {
-        output: Slot,
-        input: Slot, // only Result<Type, Type>
+        arguments: Vec<Slot>
     }
 }
 
@@ -98,10 +89,49 @@ pub enum Functions {
     VectorPopString = 41,
     VectorPopChar = 42,
     VectorPopBoolean = 43,
+    IsSome = 44,
+    IsNone = 45,
+    IsOk = 46,
+    IsErr = 47,
+    UnwrapSomeInteger = 48,
+    UnwrapSomeFloat = 49,
+    UnwrapSomeString = 50,
+    UnwrapSomeChar = 51,
+    UnwrapSomeBoolean = 52,
+    UnwrapOkInteger = 53,
+    UnwrapOkFloat = 54,
+    UnwrapOkString = 55,
+    UnwrapOkChar = 56,
+    UnwrapOkBoolean = 57,
+    UnwrapErrInteger = 58,
+    UnwrapErrFloat = 59,
+    UnwrapErrString = 60,
+    UnwrapErrChar = 61,
+    UnwrapErrBoolean = 62,
 }
 
 impl Functions {
-    pub const COUNT: usize = 44;
+    pub const COUNT: usize = 63;
+}
+
+#[repr(usize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum SpecialFunctions {
+    ReadGlobalMemoryInteger = 0,
+    ReadGlobalMemoryFloat = 1,
+    ReadGlobalMemoryString = 2,
+    ReadGlobalMemoryChar = 3,
+    ReadGlobalMemoryBoolean = 4,
+    WriteGlobalMemoryInteger = 5,
+    WriteGlobalMemoryFloat = 6,
+    WriteGlobalMemoryString = 7,
+    WriteGlobalMemoryChar = 8,
+    WriteGlobalMemoryBoolean = 9,
+    GetInstructionPosition = 10,
+}
+
+impl SpecialFunctions {
+    pub const COUNT: usize = 11;
 }
 
 pub struct FunctionSignature {

@@ -1,56 +1,35 @@
-use std::sync::mpsc::Sender;
-use crate::state_game_instruction::{Instruction, Type, Value};
+mod event;
+
+use std::sync::Arc;
+use crossbeam_channel::{Receiver, Sender};
+use crate::state_game_instruction::{Instruction};
+use crate::state_game_virtual_machine::event::{VirtualMachineEvent, VirtualMachineLog, VirtualMachineLogLevel, VirtualMachineTrap};
 
 struct VirtualMachine {
-    channel: Sender<VirtualMachineEvent>,
-    execute_position: usize,
-    instructions: Vec<Instruction>
+    channel_transmit: Sender<VirtualMachineEvent>,
+    instruction_pointer: usize,
+    instructions: Arc<[Instruction]>
 }
 
 impl VirtualMachine {
-    fn new(channel: Sender<VirtualMachineEvent>, instructions: Vec<Instruction>) -> Self {
-        Self { channel, execute_position: 0, instructions }
+    pub fn new(channel_transmit: Sender<VirtualMachineEvent>, instructions: Arc<[Instruction]>) -> Self {
+        Self { channel_transmit, instruction_pointer: 0, instructions }
+    }
+
+    fn emit(&self, event: VirtualMachineEvent) {
+        let _ = self.channel_transmit.send(event);
+    }
+
+    fn run(&mut self) -> Result<(), VirtualMachineTrap> {
+        self.emit(
+            VirtualMachineEvent::Log(
+                VirtualMachineLog { level: VirtualMachineLogLevel::Info, message: "Virtual Machine Start".to_string() }
+            )
+        );
+        Ok(())
     }
 }
 
-enum VirtualMachineEvent {
-    Log(VirtualMachineLog),
-    Trap(VirtualMachineTrap),
-    StateChange(StateChange),
-    ExecutionFinished
-}
-
-struct VirtualMachineLog {
-    level: VirtualMachineLogLevel,
-    message: String,
-}
-
-enum VirtualMachineLogLevel {
-    Trace,
-    Debug,
-    Info,
-    Warn,
-    Error,
-}
-
-struct VirtualMachineTrap {
-    trapped_position: usize,
-    label: Option<String>,
-    reason: TrapReason
-}
-
-enum TrapReason {
-    UnwrapNone,
-    InvalidIdentifier(String),
-    InvalidJump(String),
-    TypeMismatch {
-        expected: Type,
-        actual: Type,
-    }
-}
-
-struct StateChange {
-    identifier: String,
-    old: Option<Value>,
-    new: Option<Value>
+struct Logger {
+    channel_receiver: Receiver<VirtualMachineEvent>,
 }

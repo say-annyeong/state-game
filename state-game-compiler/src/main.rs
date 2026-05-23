@@ -1,3 +1,3 @@
-mod state_game_compiler;
+mod compiler;
 
 fn main() {}

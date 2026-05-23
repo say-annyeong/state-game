@@ -1,7 +1,6 @@
 use std::any::Any;
 use std::sync::Arc;
 use crate::{Identifier, Namespace};
-use crate::policy_graph::{Expr, NodeId};
 
 /// 노드 고유 ID — Binding 추적 / 캐시 키 / dependency graph 키
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

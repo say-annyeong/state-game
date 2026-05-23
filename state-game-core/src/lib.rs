@@ -1,9 +1,8 @@
-mod policy_graph;
 mod bound;
 
-mod state_game_compiler;
-mod state_game_instruction;
-mod state_game_virtual_machine;
+mod instruction;
+mod virtual_machine;
+mod instruction_verifier;
 
 use std::any::Any;
 use std::collections::HashMap;

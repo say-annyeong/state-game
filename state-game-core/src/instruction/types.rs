@@ -1,3 +1,4 @@
+#[derive(Clone, Ord, PartialOrd, Eq, PartialEq, Debug)]
 pub enum Type {
     Integer,
     Float,

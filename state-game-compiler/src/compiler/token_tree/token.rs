@@ -1,4 +1,4 @@
-use crate::state_game_compiler::token::Token;
+use crate::compiler::token::Token;
 
 pub struct TokenTree {
     token: Vec<Token>,

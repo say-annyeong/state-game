@@ -1,5 +1,5 @@
 use std::sync::Arc;
-use crate::state_game_instruction::{Type, Value};
+use crate::instruction::{Type, Value};
 
 pub enum VirtualMachineEvent {
     Log(VirtualMachineLog),
@@ -13,6 +13,7 @@ pub struct VirtualMachineLog {
     pub message: String,
 }
 
+#[derive(Debug)]
 pub enum VirtualMachineLogLevel {
     Trace,
     Debug,
@@ -21,12 +22,13 @@ pub enum VirtualMachineLogLevel {
     Error,
 }
 
+#[derive(Clone)]
 pub struct VirtualMachineTrap {
     pub trapped_position: usize,
-    pub label: Option<String>,
     pub reason: TrapReason
 }
 
+#[derive(Clone, Debug)]
 pub enum TrapReason {
     UnwrapNone,
     InvalidIdentifier(String),

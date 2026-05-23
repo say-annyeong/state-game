@@ -1,6 +1,6 @@
 use std::iter::Peekable;
 use std::str::Chars;
-use crate::state_game_compiler::token::{Position, Token, lookup_keyword, AssignmentToken, OperatorToken, PunctuationToken, SpecialToken};
+use crate::compiler::token::{Position, Token, lookup_keyword, AssignmentToken, OperatorToken, PunctuationToken, SpecialToken};
 
 #[derive(Debug, Clone)]
 pub struct Tokenizer<'a> {

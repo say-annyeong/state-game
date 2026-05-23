@@ -1,8 +1,6 @@
 mod bound;
 
-mod instruction;
-mod virtual_machine;
-mod instruction_verifier;
+mod instruction_run;
 
 use std::any::Any;
 use std::collections::HashMap;
@@ -48,7 +46,7 @@ pub trait ModificationSpecifications {
     fn chooser(&self) -> &[&dyn Chooser] { &[] }
     fn bound(&self) -> Bound { Bound::empty() }
 }
-
+/*
 trait ActionGenerator {
     fn enumerate(
         &self,
@@ -73,7 +71,7 @@ trait Transition {
         ctx: &ExecutionContext,
     ) -> Option<State>;
 }
-
+*/
 pub trait Transition {
     /// Execution order by numeric priority
     /// 1. Lower values run earlier.

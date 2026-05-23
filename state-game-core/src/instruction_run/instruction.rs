@@ -1,10 +1,8 @@
-mod types;
-
-pub use crate::instruction::types::{Type, Value};
+use crate::instruction_run::types::Type;
 
 pub type Slot = u64;
 
-#[derive(Clone)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum Instruction {
     Bind {
         slot: Slot,
@@ -23,34 +21,34 @@ pub enum Instruction {
     },
 
     ConditionalJump {
-        condition: Slot,
+        condition: Slot, // only Boolean
         true_target_position: usize,
         false_target_position: usize,
     },
 
     UnwrapSome {
         output: Slot,
-        input: Slot,
+        input: Slot, // only Option<Type>
     },
 
     UnwrapOk {
         output: Slot,
-        input: Slot,
+        input: Slot, // only Result<Type, Type>
     },
 
     UnwrapErr {
         output: Slot,
-        input: Slot,
+        input: Slot, // only Result<Type, Type>
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum Literal {
-    Integer(String),
-    Float(String),
+    Integer(i64),
+    Float(f64),
     String(String),
-    Char(String),
-    Boolean(String),
+    Char(char),
+    Boolean(bool),
 }
 
 #[repr(usize)]
@@ -85,14 +83,29 @@ pub enum Functions {
     VectorGetString = 26,
     VectorGetChar = 27,
     VectorGetBoolean = 28,
+    VectorInitInteger = 29,
+    VectorInitFloat = 30,
+    VectorInitString = 31,
+    VectorInitChar = 32,
+    VectorInitBoolean = 33,
+    VectorPushInteger = 34,
+    VectorPushFloat = 35,
+    VectorPushString = 36,
+    VectorPushChar = 37,
+    VectorPushBoolean = 38,
+    VectorPopInteger = 39,
+    VectorPopFloat = 40,
+    VectorPopString = 41,
+    VectorPopChar = 42,
+    VectorPopBoolean = 43,
 }
 
 impl Functions {
-    pub const COUNT: usize = 29;
+    pub const COUNT: usize = 44;
 }
 
 pub struct FunctionSignature {
-    pub inputs:  Box<[Type]>,
+    pub inputs:  &'static [Type],
     pub outputs: Type,
 }
 

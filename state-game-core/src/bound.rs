@@ -49,7 +49,7 @@ pub trait CustomLogicOp: Send + Sync {
     fn combine(&self, inputs: &[LogicValue]) -> LogicValue;
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub enum LogicOperators {
     And,
     Or,
@@ -68,7 +68,6 @@ impl LogicOperators {
     }
 }
 
-#[derive(Debug)]
 pub enum FunctionOutputs {
     AbstractSyntaxTree(Expression),
     Data(Data),
@@ -116,7 +115,7 @@ pub struct ParamBinding {
     pub role:        ParamRole,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub enum Expression {
     /// 외부 주입 대기 리프. 충족 전 Unknown.
     Binding(NodeIdentifier),

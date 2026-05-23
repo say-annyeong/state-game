@@ -5,10 +5,10 @@ pub enum Type {
     String,
     Char,
     Boolean,
-    Vector(Box<Type>),
+    Vector(&'static Type),
 
-    Option(Box<Type>),
-    Result(Box<Type>, Box<Type>),
+    Option(&'static Type),
+    Result(&'static Type, &'static Type),
 
     Void
 }

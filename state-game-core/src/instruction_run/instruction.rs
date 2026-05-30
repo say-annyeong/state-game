@@ -1,9 +1,9 @@
 use crate::instruction_run::types::Type;
 
-pub type Slot = u64;
+pub(super) type Slot = u64;
 
 #[derive(Clone, Debug, PartialEq)]
-pub enum Instruction {
+pub(super) enum Instruction {
     Bind {
         slot: Slot,
         type_name: Type,
@@ -12,6 +12,12 @@ pub enum Instruction {
 
     Call {
         function_name: Functions,
+        output: Slot,
+        arguments: Vec<Slot>
+    },
+
+    SpecialCall {
+        function_name: SpecialFunctions,
         output: Slot,
         arguments: Vec<Slot>
     },
@@ -25,16 +31,10 @@ pub enum Instruction {
         true_target_position: usize,
         false_target_position: usize,
     },
-
-    SpecialCall {
-        function_name: SpecialFunctions,
-        output: Slot,
-        arguments: Vec<Slot>
-    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
-pub enum Literal {
+pub(super) enum Literal {
     Integer(i64),
     Float(f64),
     String(String),
@@ -44,7 +44,7 @@ pub enum Literal {
 
 #[repr(usize)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum Functions {
+pub(super) enum Functions {
     AddInteger = 0,
     SubInteger = 1,
     MulInteger = 2,
@@ -111,12 +111,12 @@ pub enum Functions {
 }
 
 impl Functions {
-    pub const COUNT: usize = 63;
+    pub(super) const COUNT: usize = 63;
 }
 
 #[repr(usize)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum SpecialFunctions {
+pub(super) enum SpecialFunctions {
     ReadGlobalMemoryInteger = 0,
     ReadGlobalMemoryFloat = 1,
     ReadGlobalMemoryString = 2,
@@ -133,14 +133,14 @@ pub enum SpecialFunctions {
 }
 
 impl SpecialFunctions {
-    pub const COUNT: usize = 13;
+    pub(super) const COUNT: usize = 13;
 }
 
-pub struct FunctionSignature {
-    pub inputs:  &'static [Type],
-    pub outputs: Type,
+pub(super) struct FunctionSignature {
+    pub(super) inputs:  &'static [Type],
+    pub(super) outputs: Type,
 }
 
-pub struct FunctionRegistry<const N: usize> {
-    pub functions: [FunctionSignature; N],
+pub(super) struct FunctionRegistry<const N: usize> {
+    pub(super) functions: [FunctionSignature; N],
 }

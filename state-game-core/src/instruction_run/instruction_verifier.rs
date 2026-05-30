@@ -3,7 +3,7 @@ use std::sync::Arc;
 use crate::instruction_run::instruction::{FunctionRegistry, FunctionSignature, Functions, Instruction, Literal, Slot, SpecialFunctions};
 use crate::instruction_run::types::Type;
 
-pub const FUNCTION_REGISTRY: FunctionRegistry<{ Functions::COUNT }> = FunctionRegistry {
+pub(super) const FUNCTION_REGISTRY: FunctionRegistry<{ Functions::COUNT }> = FunctionRegistry {
     functions: [
         FunctionSignature { inputs: &[Type::Integer, Type::Integer], outputs: Type::Integer },                               // AddInteger
         FunctionSignature { inputs: &[Type::Integer, Type::Integer], outputs: Type::Integer },                               // SubInteger
@@ -71,7 +71,7 @@ pub const FUNCTION_REGISTRY: FunctionRegistry<{ Functions::COUNT }> = FunctionRe
     ]
 };
 
-pub const SPECIAL_FUNCTIONS_REGISTRY: FunctionRegistry<{ SpecialFunctions::COUNT }> = FunctionRegistry {
+pub(super) const SPECIAL_FUNCTIONS_REGISTRY: FunctionRegistry<{ SpecialFunctions::COUNT }> = FunctionRegistry {
     functions: [
         FunctionSignature { inputs: &[Type::String, Type::String], outputs: Type::Option(&Type::Integer) }, // ReadGlobalMemoryInteger
         FunctionSignature { inputs: &[Type::String, Type::String], outputs: Type::Option(&Type::Float) },   // ReadGlobalMemoryFloat
@@ -90,7 +90,7 @@ pub const SPECIAL_FUNCTIONS_REGISTRY: FunctionRegistry<{ SpecialFunctions::COUNT
 };
 
 #[derive(Debug, PartialEq)]
-pub enum VerifyError {
+pub(super) enum VerifyError {
     /// A slot was read before it was assigned.
     UnboundSlot { ip: usize, slot: Slot },
     /// The type of a slot did not match what was expected.
@@ -103,18 +103,18 @@ pub enum VerifyError {
     ArgumentCountMismatch { ip: usize, expected: usize, found: usize },
 }
 
-pub struct InstructionVerifier {
+pub(super) struct InstructionVerifier {
     instruction: Arc<[Instruction]>,
 }
 
 impl InstructionVerifier {
-    pub fn new(instruction: Arc<[Instruction]>) -> Self {
+    pub(super) fn new(instruction: Arc<[Instruction]>) -> Self {
         Self { instruction }
     }
 
     /// Verifies the instruction stream and returns all errors found.
     /// An empty Vec means the program is well-typed.
-    pub fn verify(&self) -> Vec<VerifyError> {
+    pub(super) fn verify(&self) -> Vec<VerifyError> {
         let instructions = &self.instruction;
         let len = instructions.len();
         let mut errors = Vec::new();

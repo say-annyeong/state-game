@@ -1,5 +1,5 @@
 #[derive(Clone, Ord, PartialOrd, Eq, PartialEq, Debug)]
-pub enum Type {
+pub(super) enum Type {
     Integer,
     Float,
     String,
@@ -29,7 +29,7 @@ pub enum Type {
 }
 
 #[derive(Clone, PartialEq, Debug)]
-pub enum Value {
+pub(super) enum Value {
     Integer(i64),
     Float(f64),
     String(String),
@@ -40,6 +40,6 @@ pub enum Value {
     Option(Option<Box<Value>>),
     Result(Result<Box<Value>, Box<Value>>),
 
-    Any,
+    Any, // can't use value
     Void
 }

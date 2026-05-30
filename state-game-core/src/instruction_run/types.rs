@@ -23,6 +23,8 @@ pub enum Type {
     /// Only valid in function output positions.
     ///
     /// Represents the absence of a return value.
+    /// If a function is of type `Any -> Void`, then when using “Call function 1, 0”, the value `1` is not a value.
+    /// It does not exist and is not recorded in the used slot. However, if the slot is already in use, the value is removed.
     Void
 }
 

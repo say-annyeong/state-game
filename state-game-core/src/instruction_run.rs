@@ -7,6 +7,7 @@ mod virtual_machine;
 #[cfg(test)]
 mod test {
     use std::sync::Arc;
+    use std::thread;
     use crate::instruction_run::instruction::{Functions, Instruction, Literal};
     use crate::instruction_run::instruction_verifier::InstructionVerifier;
     use crate::instruction_run::types::Type;
@@ -24,7 +25,8 @@ mod test {
         assert!(instruction_verifier);
         let mut virtual_machine = VirtualMachine::new(sender, instructions.clone());
         let logger = Logger::new(receiver);
-        let _ = virtual_machine.run();
-        let _ = logger.run();
+        let (thread1, thread2) = (thread::spawn(move || {let _ = virtual_machine.run(); } ), thread::spawn(move || {let _ = logger.run(); } ));
+        let _ = thread1.join();
+        let _ = thread2.join();
     }
 }

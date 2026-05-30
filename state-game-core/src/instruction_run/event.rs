@@ -43,6 +43,7 @@ pub enum TrapReason {
     IndexOutOfBounds { index: i64, length: usize },
     /// `StringGetChar` index out of bounds.
     StringIndexOutOfBounds { index: i64, length: usize },
+    VerifierBug
 }
 
 pub struct StateChange {

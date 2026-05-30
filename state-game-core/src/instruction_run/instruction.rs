@@ -128,10 +128,12 @@ pub enum SpecialFunctions {
     WriteGlobalMemoryChar = 8,
     WriteGlobalMemoryBoolean = 9,
     GetInstructionPosition = 10,
+    GetModificationNamespaceList = 11,
+    GetModificationApplicationProgrammingInterfaceEntryPointPosition = 12
 }
 
 impl SpecialFunctions {
-    pub const COUNT: usize = 11;
+    pub const COUNT: usize = 13;
 }
 
 pub struct FunctionSignature {

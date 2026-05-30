@@ -84,6 +84,8 @@ pub const SPECIAL_FUNCTIONS_REGISTRY: FunctionRegistry<{ SpecialFunctions::COUNT
         FunctionSignature { inputs: &[Type::String, Type::String, Type::Char], outputs: Type::Void },       // WriteGlobalMemoryChar
         FunctionSignature { inputs: &[Type::String, Type::String, Type::Boolean], outputs: Type::Void },    // WriteGlobalMemoryBoolean
         FunctionSignature { inputs: &[], outputs: Type::Integer },                                          // GetInstructionPosition
+        FunctionSignature { inputs: &[], outputs: Type::Vector(&Type::String) },                            // GetModificationNamespaceList
+        FunctionSignature { inputs: &[Type::String, Type::Integer], outputs: Type::Integer },               // GetModificationApplicationProgrammingInterfaceEntryPointPosition
     ]
 };
 
@@ -191,7 +193,34 @@ impl InstructionVerifier {
                 }
                 
                 Instruction::SpecialCall { function_name, output, arguments } => {
-                    
+                    let sig = &SPECIAL_FUNCTIONS_REGISTRY.functions[*function_name as usize];
+
+                    // argument count
+                    if arguments.len() != sig.inputs.len() {
+                        errors.push(VerifyError::ArgumentCountMismatch {
+                            ip,
+                            expected: sig.inputs.len(),
+                            found: arguments.len(),
+                        });
+                    } else {
+                        // argument types
+                        for (arg_slot, expected_type) in arguments.iter().zip(sig.inputs.iter()) {
+                            match slots.get(arg_slot) {
+                                None => errors.push(VerifyError::UnboundSlot { ip, slot: *arg_slot }),
+                                Some(found_type) if !type_compatible(found_type, expected_type) => {
+                                    errors.push(VerifyError::TypeMismatch {
+                                        ip,
+                                        slot: *arg_slot,
+                                        expected: expected_type.clone(),
+                                        found: found_type.clone(),
+                                    });
+                                }
+                                _ => {}
+                            }
+                        }
+                    }
+
+                    slots.insert(*output, sig.outputs.clone());
                 }
             }
         }

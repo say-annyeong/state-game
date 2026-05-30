@@ -5,9 +5,85 @@ mod instruction_run;
 use std::any::Any;
 use std::collections::HashMap;
 
-pub type Namespace = String;
-pub type Identifier = String;
+// =========================
+// Core Types
+// =========================
 
+pub trait State: Clone + Send + Sync {}
+
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
+pub struct Identifier(pub String);
+
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
+pub struct Namespace(pub String);
+
+// =========================
+// Input Layer
+// =========================
+
+pub trait InputSchema {
+    fn identifier(&self) -> Identifier;
+}
+
+pub trait Input: Clone + Send + Sync {
+    fn schema(&self) -> Identifier;
+}
+
+// =========================
+// Execution Context
+// =========================
+
+pub struct Context {
+    pub rng_seed: u64,
+}
+
+// =========================
+// Engine Output
+// =========================
+
+pub enum StepResult {
+    Next(Box<dyn State>),
+    RequiresInput(InputSpace),
+}
+
+pub struct InputSpace {
+    pub schemas: Vec<Box<dyn InputSchema>>,
+}
+
+// =========================
+// Core Engine
+// =========================
+
+pub trait GameEngine {
+    fn step(
+        &self,
+        state: Box<dyn State>,
+        context: Context,
+    ) -> StepResult;
+}
+
+// =========================
+// Selection Strategy
+// =========================
+
+pub trait SelectionStrategy {
+    fn select(
+        &self,
+        inputs: Vec<(Box<dyn Input>, f64)>,
+        context: &Context,
+    ) -> Box<dyn Input>;
+}
+
+// =========================
+// Rule Module Registry
+// =========================
+
+/// ModificationSpecifications defines the game's registry.
+/// It consists of three types of metadata and optional implementation methods.
+/// The metadata fields are as follows:
+/// 1. base_priority: Defines the priority.
+/// 2. use_mix_inside_priority: Specifies whether the priority is shared with other registries.
+/// 3. namespace: Defines the namespace. If duplicated, registry conflicts occur and loading will fail.
 pub trait ModificationSpecifications {
     /// Base priority of this specification.
     ///
@@ -37,106 +113,108 @@ pub trait ModificationSpecifications {
     ///
     fn base_priority(&self) -> i64;
     fn use_mix_inside_priority(&self) -> bool;
+
     /// naming rule: snake_case
     /// If multiple specifications share the same namespace, loading fails.
     fn namespace(&self) -> Namespace;
+
     /// optional implementations
-    fn transition(&self) -> &[&dyn Transition] { &[] }
-    /// optional implementations
-    fn chooser(&self) -> &[&dyn Chooser] { &[] }
-    fn bound(&self) -> Bound { Bound::empty() }
-}
-/*
-trait ActionGenerator {
-    fn enumerate(
-        &self,
-        state: &State,
-        out: &mut InputAccumulator<Input>,
-    );
+    fn input_providers(&self) -> &[&dyn InputProvider];
+
+    fn input_generators(&self) -> &[&dyn InputGenerator];
+
+    fn input_filters(&self) -> &[&dyn InputFilter];
+
+    fn input_weights(&self) -> &[&dyn InputWeight];
+
+    fn transformers(&self) -> &[&dyn StateTransformer];
+
+    fn terminal_conditions(&self) -> &[&dyn TerminalCondition];
 }
 
-trait Constraint {
-    fn validate(
+// =========================
+// Input Pipeline
+// =========================
+
+pub trait InputProvider {
+    fn provide(
         &self,
-        state: &State,
-        input: &Input,
+        state: &Box<dyn State>,
+    ) -> Vec<Box<dyn InputSchema>>;
+}
+
+pub trait InputGenerator {
+    fn generate(
+        &self,
+        schema: &Box<dyn InputSchema>,
+    ) -> Box<dyn Iterator<Item = Box<dyn Input>>>;
+}
+
+pub trait InputFilter {
+    fn allow(
+        &self,
+        state: &Box<dyn State>,
+        input: &Box<dyn Input>,
     ) -> bool;
 }
 
-trait Transition {
+pub trait InputWeight {
+    fn weight(
+        &self,
+        state: &Box<dyn State>,
+        input: &Box<dyn Input>,
+    ) -> f64;
+}
+
+// =========================
+// State Transition
+// =========================
+
+pub trait StateTransformer {
     fn apply(
         &self,
-        state: &State,
-        input: &Input,
-        ctx: &ExecutionContext,
-    ) -> Option<State>;
-}
-*/
-pub trait Transition {
-    /// Execution order by numeric priority
-    /// 1. Lower values run earlier.
-    ///
-    /// Notes (when priorities are equal):
-    /// 1. Execution order is not guaranteed.
-    fn inside_priority(&self) -> i64;
-    /// naming rule: snake_case
-    fn transition_identifier(&self) -> Identifier;
-    /// todo
-    fn transition(&self, state: State, bound: Bound) -> Vec<State>;
+        state: &Box<dyn State>,
+        input: &Box<dyn Input>,
+    ) -> Option<Box<dyn State>>;
 }
 
-pub trait Chooser {
-    /// Execution order by numeric priority
-    /// 1. Lower values run earlier.
-    ///
-    /// Notes (when priorities are equal):
-    /// 1. Execution order is not guaranteed.
-    fn inside_priority(&self) -> i64;
-    /// naming rule: snake_case
-    fn chooser_identifier(&self) -> Identifier;
-    /// todo
-    fn choose(&self, set_state: &[State], input: &[Input]) -> Option<State>;
+// =========================
+// Terminal Condition
+// =========================
+
+pub trait TerminalCondition {
+    fn is_terminal(
+        &self,
+        state: &Box<dyn State>,
+    ) -> bool;
 }
 
-pub trait ValueType {
-    fn as_any(&self) -> &dyn Any;
-}
+// =========================
+// Engine Pipeline (conceptual)
+// =========================
 
-impl<T: Any> ValueType for T {
-    fn as_any(&self) -> &dyn Any {
-        self
+impl dyn GameEngine {
+    fn conceptual_flow(&self) {
+        /*
+        State
+          ↓
+        InputProvider
+          ↓
+        InputSchema
+          ↓
+        InputGenerator
+          ↓
+        Input
+          ↓
+        InputFilter
+          ↓
+        InputWeight
+          ↓
+        SelectionStrategy
+          ↓
+        StateTransformer
+          ↓
+        Next State
+        */
     }
-}
-
-pub struct State {
-    state: HashMap<(Namespace, Identifier), Value>,
-}
-
-pub struct Value {
-    last_writer: Namespace,
-    write_count: i64,
-    value: Box<dyn ValueType>,
-}
-
-pub struct Input {
-    namespace: Namespace,
-    identifier: Identifier,
-    value: Box<dyn ValueType>,
-}
-
-pub struct Bound {
-    bound: BoundAbstractSyntaxTree
-}
-
-impl Bound {
-    fn empty() -> Bound {
-        Self { bound: BoundAbstractSyntaxTree::False }
-    }
-}
-
-pub enum BoundAbstractSyntaxTree {
-    And(Box<BoundAbstractSyntaxTree>, Box<BoundAbstractSyntaxTree>),
-    Or(Box<BoundAbstractSyntaxTree>, Box<BoundAbstractSyntaxTree>),
-
-    False
 }

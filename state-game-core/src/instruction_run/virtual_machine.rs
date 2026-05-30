@@ -3,6 +3,7 @@ use std::{
     ops::Deref,
     sync::Arc
 };
+use std::sync::RwLock;
 use crossbeam_channel::{Receiver, Sender};
 use crate::instruction_run::instruction::{Functions, Instruction, Literal, Slot, SpecialFunctions};
 use crate::instruction_run::types::{Type, Value};
@@ -23,25 +24,38 @@ enum NextInstructionPointer {
 
 // ── Virtual Machine ──────────────────────────────────────────────────────────
 
-pub struct VirtualMachine {
+
+/// VirtualMachine
+pub(super) struct VirtualMachine {
     channel_transmit: Sender<VirtualMachineEvent>,
     instruction_pointer: usize,
     instructions: Arc<[Instruction]>,
     slots: HashMap<Slot, Arc<Value>>,
-    global_memory: HashMap<(Namespace, Identifier), Arc<Value>>,
+    global_memory: Arc<RwLock<HashMap<(Namespace, Identifier), Value>>>,
     modification_namespace_list: Vec<Namespace>,
     application_programming_interface_entry_point: HashMap<Namespace, Vec<usize>>,
 }
 
+/// A VirtualMachine is designed to support multiple concurrent instances.
+/// Each instance operates independently with its own Instruction set.
+///
+/// Execution always creates and runs a new VirtualMachine instance.
+/// Instances are allowed to execute in parallel unless an explicit
+/// dependency relationship is declared.
+///
+/// Dependency management is the responsibility of the caller.
+/// Any race conditions, ordering issues, or other bugs resulting from
+/// undeclared dependencies are considered developer errors and are not
+/// attributed to the VirtualMachine implementation.
 impl VirtualMachine {
-    pub fn new(
+    pub(super) fn new(
         channel_transmit: Sender<VirtualMachineEvent>,
         instructions: Arc<[Instruction]>,
     ) -> Self {
-        Self::set_run_position(channel_transmit, instructions, 0)
+        Self::with_instruction_pointer(channel_transmit, instructions, 0)
     }
 
-    pub fn set_run_position(
+    pub(super) fn with_instruction_pointer(
         channel_transmit: Sender<VirtualMachineEvent>,
         instructions: Arc<[Instruction]>,
         instruction_pointer: usize
@@ -51,7 +65,7 @@ impl VirtualMachine {
             instruction_pointer,
             instructions,
             slots: HashMap::new(),
-            global_memory: HashMap::new(),
+            global_memory: Arc::new(RwLock::new(HashMap::new())), // todo: this field value from argument new function
             modification_namespace_list: Vec::new(), // todo: this field value from argument new function
             application_programming_interface_entry_point: HashMap::new(), // todo: this field value from argument new function
         }
@@ -101,7 +115,7 @@ impl VirtualMachine {
 
     // ── Main loop ─────────────────────────────────────────────────────────────
 
-    pub fn run(&mut self) -> Result<(), VirtualMachineTrap> {
+    pub(super) fn run(&mut self) -> Result<(), VirtualMachineTrap> {
         self.log(VirtualMachineLogLevel::Info, "Virtual Machine Start");
 
         while self.instruction_pointer < self.instructions.len() {
@@ -420,9 +434,10 @@ impl VirtualMachine {
             | SpecialFunctions::ReadGlobalMemoryBoolean => {
                 let namespace  = str_!(arguments[0]);
                 let identifier = str_!(arguments[1]);
-                let value = self.global_memory
-                    .get(&(namespace, identifier))
-                    .map(|v| Box::new(v.deref().clone()));
+                let value =
+                    self.global_memory.try_read()
+                        .ok()
+                        .and_then(|m| m.get(&(Namespace { 0: namespace }, Identifier { 0: identifier })).map(|v| Box::new(v.clone())));
                 Ok(Value::Option(value))
             }
 
@@ -433,7 +448,9 @@ impl VirtualMachine {
             | SpecialFunctions::WriteGlobalMemoryBoolean => {
                 let namespace  = str_!(arguments[0]);
                 let identifier = str_!(arguments[1]);
-                self.global_memory.insert((namespace, identifier), arguments[2].clone());
+                self.global_memory.try_write()
+                    .ok()
+                    .and_then(|mut m| m.insert((Namespace { 0: namespace }, Identifier { 0: identifier }), arguments[2].deref().clone()));
                 Ok(Value::Void)
             }
 
@@ -445,7 +462,7 @@ impl VirtualMachine {
                 Ok(Value::Vector(
                     self.modification_namespace_list
                         .iter()
-                        .map(|ns| Value::String(ns.clone()))
+                        .map(|ns| Value::String(ns.0.clone()))
                         .collect(),
                 ))
             }
@@ -454,7 +471,7 @@ impl VirtualMachine {
                 let namespace = str_!(arguments[0]);
                 let application_programming_interface_entry_function_variant = int!(arguments[1]);
                 Ok(Value::Option(
-                    self.application_programming_interface_entry_point.get(&namespace).and_then(|entry_points| entry_points.get(application_programming_interface_entry_function_variant as usize)).map(|&value| Box::new(Value::Integer(value as i64)))
+                    self.application_programming_interface_entry_point.get(&Namespace { 0: namespace }).and_then(|entry_points| entry_points.get(application_programming_interface_entry_function_variant as usize)).map(|&value| Box::new(Value::Integer(value as i64)))
                 ))
             }
         }
@@ -478,22 +495,22 @@ fn parse_literal(ty: &Type, lit: &Literal) -> Option<Value> {
 
 // ── Logger ────────────────────────────────────────────────────────────────────
 
-pub struct Logger {
+pub(super) struct Logger {
     channel_receiver: Receiver<VirtualMachineEvent>,
     verbose: bool,
 }
 
 impl Logger {
-    pub fn new(rx: Receiver<VirtualMachineEvent>) -> Self {
+    pub(super) fn new(rx: Receiver<VirtualMachineEvent>) -> Self {
         Self { channel_receiver: rx, verbose: false }
     }
 
-    pub fn with_verbose(mut self, v: bool) -> Self {
+    pub(super) fn with_verbose(mut self, v: bool) -> Self {
         self.verbose = v;
         self
     }
 
-    pub fn run(&self) {
+    pub(super) fn run(&self) {
         while let Ok(event) = self.channel_receiver.recv() {
             match event {
                 VirtualMachineEvent::Log(l) => {

@@ -3,16 +3,13 @@ use std::{
     ops::Deref,
     sync::Arc
 };
-use std::sync::RwLock;
-use crossbeam_channel::{Receiver, Sender};
+use std::sync::{RwLock, RwLockReadGuard, TryLockError};
+use crossbeam_channel::{Receiver, SendError, Sender};
 use crate::instruction_run::instruction::{Functions, Instruction, Literal, Slot, SpecialFunctions};
 use crate::instruction_run::types::{Type, Value};
-use crate::instruction_run::event::{
-    StateChange, TrapReason, VirtualMachineEvent, VirtualMachineLog,
-    VirtualMachineLogLevel, VirtualMachineTrap,
-};
+use crate::instruction_run::event::{StateChange, TrapReason, VirtualMachineCallEvent, VirtualMachineEvent, VirtualMachineLog, VirtualMachineLogLevel, VirtualMachineTrap};
 use crate::{Identifier, Namespace};
-
+use crate::helper::try_until;
 // ── Instruction pointer step ─────────────────────────────────────────────────
 
 enum NextInstructionPointer {
@@ -27,13 +24,15 @@ enum NextInstructionPointer {
 
 /// VirtualMachine
 pub(super) struct VirtualMachine {
-    channel_transmit: Sender<VirtualMachineEvent>,
-    instruction_pointer: usize,
-    instructions: Arc<[Instruction]>,
-    slots: HashMap<Slot, Arc<Value>>,
-    global_memory: Arc<RwLock<HashMap<(Namespace, Identifier), Value>>>,
-    modification_namespace_list: Vec<Namespace>,
-    application_programming_interface_entry_point: HashMap<Namespace, Vec<usize>>,
+    pub(super) logger_sender: Sender<VirtualMachineEvent>,
+    pub(super) scheduler_sender: Sender<VirtualMachineCallEvent>,
+    pub(super) scheduler_receiver: Receiver<VirtualMachineCallEvent>,
+    pub(super) self_identifier: u64,
+    pub(super) instruction_pointer: usize,
+    pub(super) instructions: Arc<[Instruction]>,
+    pub(super) slots: HashMap<Slot, Arc<Value>>,
+    pub(super) global_memory: Arc<RwLock<HashMap<(Namespace, Identifier), Value>>>,
+    pub(super) modification_namespace_list: Arc<[Namespace]>,
 }
 
 /// A VirtualMachine is designed to support multiple concurrent instances.
@@ -49,32 +48,61 @@ pub(super) struct VirtualMachine {
 /// attributed to the VirtualMachine implementation.
 impl VirtualMachine {
     pub(super) fn new(
-        channel_transmit: Sender<VirtualMachineEvent>,
+        logger_sender: Sender<VirtualMachineEvent>,
+        scheduler_sender: Sender<VirtualMachineCallEvent>,
+        scheduler_receiver: Receiver<VirtualMachineCallEvent>,
+        self_identifier: u64,
         instructions: Arc<[Instruction]>,
     ) -> Self {
-        Self::with_instruction_pointer(channel_transmit, instructions, 0)
+        Self::with_instruction_pointer(logger_sender, scheduler_sender, scheduler_receiver, self_identifier, instructions, 0)
     }
 
     pub(super) fn with_instruction_pointer(
-        channel_transmit: Sender<VirtualMachineEvent>,
+        logger_sender: Sender<VirtualMachineEvent>,
+        scheduler_sender: Sender<VirtualMachineCallEvent>,
+        scheduler_receiver: Receiver<VirtualMachineCallEvent>,
+        self_identifier: u64,
         instructions: Arc<[Instruction]>,
         instruction_pointer: usize
     ) -> Self {
         Self {
-            channel_transmit,
+            logger_sender,
+            scheduler_sender,
+            scheduler_receiver,
+            self_identifier,
             instruction_pointer,
             instructions,
             slots: HashMap::new(),
             global_memory: Arc::new(RwLock::new(HashMap::new())), // todo: this field value from argument new function
-            modification_namespace_list: Vec::new(), // todo: this field value from argument new function
-            application_programming_interface_entry_point: HashMap::new(), // todo: this field value from argument new function
+            modification_namespace_list: Arc::new([]), // todo: this field value from argument new function
+        }
+    }
+
+    pub(super) fn call_self(
+        &self,
+        scheduler_sender: Sender<VirtualMachineCallEvent>,
+        scheduler_receiver: Receiver<VirtualMachineCallEvent>,
+        self_identifier: u64,
+        instruction_pointer: usize,
+        instructions: Arc<[Instruction]>
+    ) -> Self {
+        Self {
+            logger_sender: self.logger_sender.clone(),
+            scheduler_sender,
+            scheduler_receiver,
+            self_identifier,
+            instruction_pointer,
+            instructions,
+            slots: HashMap::new(),
+            global_memory: self.global_memory.clone(),
+            modification_namespace_list: self.modification_namespace_list.clone(),
         }
     }
 
     // ── Helpers ──────────────────────────────────────────────────────────────
 
     fn emit(&self, event: VirtualMachineEvent) {
-        _ = self.channel_transmit.send(event);
+        _ = self.logger_sender.send(event);
     }
 
     fn log(&self, level: VirtualMachineLogLevel, message: impl Into<String>) {
@@ -112,6 +140,22 @@ impl VirtualMachine {
             new: Some(value),
         }));
     }
+
+    fn call(&self, function_identifier: u64, input: HashMap<Slot, Arc<Value>>, output: HashMap<Slot, Arc<Value>>) -> Option<HashMap<Slot, Arc<Value>>> {
+        match try_until(|| self.scheduler_sender.send(VirtualMachineCallEvent::new(self.self_identifier, function_identifier, input.clone(), output.clone()))) {
+            Ok(_) => {}
+            Err(_error) => return None
+        }
+
+        let result = match self.scheduler_receiver.recv() {
+            Ok(result) => result,
+            Err(_error) => return None
+        };
+
+        Some(result.output)
+    }
+
+
 
     // ── Main loop ─────────────────────────────────────────────────────────────
 
@@ -193,6 +237,12 @@ impl VirtualMachine {
                     .collect::<Result<Vec<_>, _>>()?;
                 let result = self.special_dispatch(*function_name, &args)?;
                 self.write(*output, Arc::new(result));
+                Ok(NextInstructionPointer::Advance)
+            }
+
+            Instruction::CallUserDefined { function_identifier, output, arguments } => {
+                let args = arguments.iter().map(|&s| (s, self.read(s))).collect::<Vec<_>>();
+                self.call(*function_identifier, arguments, output);
                 Ok(NextInstructionPointer::Advance)
             }
         }
@@ -434,11 +484,20 @@ impl VirtualMachine {
             | SpecialFunctions::ReadGlobalMemoryBoolean => {
                 let namespace  = str_!(arguments[0]);
                 let identifier = str_!(arguments[1]);
-                let value =
-                    self.global_memory.try_read()
-                        .ok()
-                        .and_then(|m| m.get(&(Namespace { 0: namespace }, Identifier { 0: identifier })).map(|v| Box::new(v.clone())));
-                Ok(Value::Option(value))
+                let value = match self.global_memory.try_read() {
+                    Ok(value) => Ok(Box::new(Value::Option(value.get(&(Namespace { 0: namespace }, Identifier { 0: identifier })).map(|v| Box::new(v.clone()))))),
+                    Err(error) => {
+                        let result = match error {
+                            TryLockError::Poisoned(value) => {
+                                value.into_inner();
+                                "Poisoned" // todo: todooooooooooooooooooooo
+                            },
+                            TryLockError::WouldBlock => "WouldBlock"
+                        };
+                        Err(Box::new(Value::Void))
+                    }
+                };
+                Ok(Value::Result(value))
             }
 
             SpecialFunctions::WriteGlobalMemoryInteger
@@ -464,14 +523,6 @@ impl VirtualMachine {
                         .iter()
                         .map(|ns| Value::String(ns.0.clone()))
                         .collect(),
-                ))
-            }
-
-            SpecialFunctions::GetModificationApplicationProgrammingInterfaceEntryPointPosition => {
-                let namespace = str_!(arguments[0]);
-                let application_programming_interface_entry_function_variant = int!(arguments[1]);
-                Ok(Value::Option(
-                    self.application_programming_interface_entry_point.get(&Namespace { 0: namespace }).and_then(|entry_points| entry_points.get(application_programming_interface_entry_function_variant as usize)).map(|&value| Box::new(Value::Integer(value as i64)))
                 ))
             }
         }

@@ -85,7 +85,6 @@ pub(super) const SPECIAL_FUNCTIONS_REGISTRY: FunctionRegistry<{ SpecialFunctions
         FunctionSignature { inputs: &[Type::String, Type::String, Type::Boolean], outputs: Type::Void },    // WriteGlobalMemoryBoolean
         FunctionSignature { inputs: &[], outputs: Type::Integer },                                          // GetInstructionPosition
         FunctionSignature { inputs: &[], outputs: Type::Vector(&Type::String) },                            // GetModificationNamespaceList
-        FunctionSignature { inputs: &[Type::String, Type::Integer], outputs: Type::Integer },               // GetModificationApplicationProgrammingInterfaceEntryPointPosition
     ]
 };
 
@@ -221,6 +220,10 @@ impl InstructionVerifier {
                     }
 
                     slots.insert(*output, sig.outputs.clone());
+                }
+
+                Instruction::CallUserDefined { function_identifier: function_id, output, arguments } => {
+                    continue //
                 }
             }
         }

@@ -1,15 +1,12 @@
 mod bound;
 
 mod instruction_run;
-
-use std::any::Any;
-use std::collections::HashMap;
-
+mod helper;
 // =========================
 // Core Types
 // =========================
 
-pub trait State: Clone + Send + Sync {}
+pub trait State: Send + Sync {}
 
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
 pub struct Identifier(pub String);
@@ -25,7 +22,7 @@ pub trait InputSchema {
     fn identifier(&self) -> Identifier;
 }
 
-pub trait Input: Clone + Send + Sync {
+pub trait Input: Send + Sync {
     fn schema(&self) -> Identifier;
 }
 
@@ -216,5 +213,14 @@ impl dyn GameEngine {
           ↓
         Next State
         */
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn test() {
+
     }
 }

@@ -22,6 +22,12 @@ pub(super) enum Instruction {
         arguments: Vec<Slot>
     },
 
+    CallUserDefined {
+        function_identifier: u64,
+        output: Vec<Slot>,
+        arguments: Vec<Slot>
+    },
+
     Jump {
         target_position: usize,
     },
@@ -129,11 +135,10 @@ pub(super) enum SpecialFunctions {
     WriteGlobalMemoryBoolean = 9,
     GetInstructionPosition = 10,
     GetModificationNamespaceList = 11,
-    GetModificationApplicationProgrammingInterfaceEntryPointPosition = 12
 }
 
 impl SpecialFunctions {
-    pub(super) const COUNT: usize = 13;
+    pub(super) const COUNT: usize = 12;
 }
 
 pub(super) struct FunctionSignature {

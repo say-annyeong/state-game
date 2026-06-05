@@ -1,4 +1,6 @@
+use std::collections::HashMap;
 use std::sync::Arc;
+use crate::instruction_run::instruction::Slot;
 use crate::instruction_run::types::{Type, Value};
 
 pub(super) enum VirtualMachineEvent {
@@ -50,4 +52,17 @@ pub(super) struct StateChange {
     pub(super) identifier: String,
     pub(super) old: Option<Arc<Value>>,
     pub(super) new: Option<Arc<Value>>,
+}
+
+pub(super) struct VirtualMachineCallEvent {
+    pub(super) self_identifier: u64,
+    pub(super) function_identifier: u64,
+    pub(super) input: HashMap<Slot, Arc<Value>>,
+    pub(super) output: HashMap<Slot, Arc<Value>>
+}
+
+impl VirtualMachineCallEvent {
+    pub fn new(self_identifier: u64, function_identifier: u64, input: HashMap<Slot, Arc<Value>>, output: HashMap<Slot, Arc<Value>>) -> Self {
+        Self { self_identifier, function_identifier, input, output }
+    }
 }

@@ -5,11 +5,13 @@ use std::{
 };
 use std::sync::{RwLock, RwLockReadGuard, TryLockError};
 use crossbeam_channel::{Receiver, SendError, Sender};
-use crate::instruction_run::instruction::{Functions, Instruction, Literal, Slot, SpecialFunctions};
+use crate::instruction_run::instruction::{FunctionIdentifier, Functions, Instruction, Literal, Slot, SpecialFunctions};
 use crate::instruction_run::types::{Type, Value};
 use crate::instruction_run::event::{StateChange, TrapReason, VirtualMachineCallEvent, VirtualMachineEvent, VirtualMachineLog, VirtualMachineLogLevel, VirtualMachineTrap};
 use crate::{Identifier, Namespace};
 use crate::helper::try_until;
+use crate::instruction_run::instruction_verifier::VerifyError;
+
 // ── Instruction pointer step ─────────────────────────────────────────────────
 
 enum NextInstructionPointer {
@@ -51,7 +53,7 @@ impl VirtualMachine {
         logger_sender: Sender<VirtualMachineEvent>,
         scheduler_sender: Sender<VirtualMachineCallEvent>,
         scheduler_receiver: Receiver<VirtualMachineCallEvent>,
-        self_identifier: u64,
+        self_identifier: FunctionIdentifier,
         instructions: Arc<[Instruction]>,
     ) -> Self {
         Self::with_instruction_pointer(logger_sender, scheduler_sender, scheduler_receiver, self_identifier, instructions, 0)
@@ -61,7 +63,7 @@ impl VirtualMachine {
         logger_sender: Sender<VirtualMachineEvent>,
         scheduler_sender: Sender<VirtualMachineCallEvent>,
         scheduler_receiver: Receiver<VirtualMachineCallEvent>,
-        self_identifier: u64,
+        self_identifier: FunctionIdentifier,
         instructions: Arc<[Instruction]>,
         instruction_pointer: usize
     ) -> Self {
@@ -78,13 +80,14 @@ impl VirtualMachine {
         }
     }
 
-    pub(super) fn call_self(
+    pub(super) fn call_function(
         &self,
         scheduler_sender: Sender<VirtualMachineCallEvent>,
         scheduler_receiver: Receiver<VirtualMachineCallEvent>,
-        self_identifier: u64,
+        self_identifier: FunctionIdentifier,
         instruction_pointer: usize,
-        instructions: Arc<[Instruction]>
+        instructions: Arc<[Instruction]>,
+        slots: HashMap<Slot, Arc<Value>>
     ) -> Self {
         Self {
             logger_sender: self.logger_sender.clone(),
@@ -93,7 +96,7 @@ impl VirtualMachine {
             self_identifier,
             instruction_pointer,
             instructions,
-            slots: HashMap::new(),
+            slots,
             global_memory: self.global_memory.clone(),
             modification_namespace_list: self.modification_namespace_list.clone(),
         }
@@ -129,7 +132,7 @@ impl VirtualMachine {
         self.slots
             .get(&slot)
             .cloned()
-            .ok_or_else(|| self.trap(TrapReason::VerifierBug))
+            .ok_or_else(|| self.trap(TrapReason::VerifierBug("Unbound Slot".to_string())))
     }
 
     fn write(&mut self, slot: Slot, value: Arc<Value>) {
@@ -141,7 +144,7 @@ impl VirtualMachine {
         }));
     }
 
-    fn call(&self, function_identifier: u64, input: HashMap<Slot, Arc<Value>>, output: HashMap<Slot, Arc<Value>>) -> Option<HashMap<Slot, Arc<Value>>> {
+    fn call(&self, function_identifier: FunctionIdentifier, input: &HashMap<Slot, Arc<Value>>, output: &HashMap<Slot, Arc<Value>>) -> Option<HashMap<Slot, Arc<Value>>> {
         match try_until(|| self.scheduler_sender.send(VirtualMachineCallEvent::new(self.self_identifier, function_identifier, input.clone(), output.clone()))) {
             Ok(_) => {}
             Err(_error) => return None
@@ -154,8 +157,6 @@ impl VirtualMachine {
 
         Some(result.output)
     }
-
-
 
     // ── Main loop ─────────────────────────────────────────────────────────────
 
@@ -192,14 +193,14 @@ impl VirtualMachine {
             // ── Bind ──────────────────────────────────────────────────────────
             Instruction::Bind { slot, type_name, value } => {
                 let v = parse_literal(type_name, value)
-                    .ok_or_else(|| self.trap(TrapReason::VerifierBug))?;
+                    .ok_or_else(|| self.trap(TrapReason::VerifierBug("Type Mismatch".to_string())))?;
                 self.write(*slot, Arc::new(v));
                 Ok(NextInstructionPointer::Advance)
             }
 
             // ── Call ──────────────────────────────────────────────────────────
-            Instruction::Call { function_name, output, arguments } => {
-                let args = arguments.iter()
+            Instruction::Call { function_name, inputs, output } => {
+                let args = inputs.iter()
                     .map(|s| self.read(*s))
                     .collect::<Result<Vec<_>, _>>()?;
                 let result = self.dispatch(*function_name, &args)?;
@@ -221,7 +222,7 @@ impl VirtualMachine {
                 let v = self.read(*condition)?;
                 let b = match &*v {
                     Value::Boolean(b) => *b,
-                    _ => return Err(self.trap(TrapReason::VerifierBug)),
+                    _ => return Err(self.trap(TrapReason::VerifierBug("Type Mismatch".to_string()))),
                 };
                 Ok(NextInstructionPointer::Goto(if b {
                     *true_target_position
@@ -231,8 +232,8 @@ impl VirtualMachine {
             }
 
             // ── SpecialCall ───────────────────────────────────────────────────
-            Instruction::SpecialCall { function_name, output, arguments } => {
-                let args = arguments.iter()
+            Instruction::SpecialCall { function_name, inputs, output } => {
+                let args = inputs.iter()
                     .map(|s| self.read(*s))
                     .collect::<Result<Vec<_>, _>>()?;
                 let result = self.special_dispatch(*function_name, &args)?;
@@ -240,9 +241,30 @@ impl VirtualMachine {
                 Ok(NextInstructionPointer::Advance)
             }
 
-            Instruction::CallUserDefined { function_identifier, output, arguments } => {
-                let args = arguments.iter().map(|&s| (s, self.read(s))).collect::<Vec<_>>();
-                self.call(*function_identifier, arguments, output);
+            Instruction::CallDefined { function_identifier, inputs, outputs } => {
+                let inputs = {
+                    let mut result = HashMap::new();
+                    for slot in inputs {
+                        let read = match self.read(*slot) {
+                            Ok(read) => read,
+                            Err(error) => return Err(error),
+                        };
+                        result.insert(*slot, read);
+                    }
+                    result
+                };
+                let outputs = {
+                    let mut result = HashMap::new();
+                    for slot in outputs {
+                        let read = match self.read(*slot) {
+                            Ok(read) => read,
+                            Err(error) => return Err(error),
+                        };
+                        result.insert(*slot, read);
+                    }
+                    result
+                };
+                self.call(*function_identifier, &inputs, &outputs);
                 Ok(NextInstructionPointer::Advance)
             }
         }
@@ -260,7 +282,7 @@ impl VirtualMachine {
             ($v:expr) => {
                 match &*$v {
                     Value::Integer(n) => *n,
-                    _ => return Err(self.trap(TrapReason::VerifierBug))
+                    _ => return Err(self.trap(TrapReason::VerifierBug("Type Mismatch".to_string()))),
                 }
             }
         }
@@ -268,7 +290,7 @@ impl VirtualMachine {
             ($v:expr) => {
                 match &*$v {
                     Value::Float(f)   => *f,
-                    _ => return Err(self.trap(TrapReason::VerifierBug))
+                    _ => return Err(self.trap(TrapReason::VerifierBug("Type Mismatch".to_string())))
                 }
             }
         }
@@ -276,7 +298,7 @@ impl VirtualMachine {
             ($v:expr) => {
                 match &*$v {
                     Value::Boolean(b) => *b,
-                    _ => return Err(self.trap(TrapReason::VerifierBug))
+                    _ => return Err(self.trap(TrapReason::VerifierBug("Type Mismatch".to_string())))
                 }
             }
         }
@@ -284,7 +306,7 @@ impl VirtualMachine {
             ($v:expr) => {
                 match &*$v {
                     Value::String(s)  => s.clone(),
-                    _ => return Err(self.trap(TrapReason::VerifierBug))
+                    _ => return Err(self.trap(TrapReason::VerifierBug("Type Mismatch".to_string())))
                 }
             }
         }
@@ -292,7 +314,7 @@ impl VirtualMachine {
             ($v:expr) => {
                 match &*$v {
                     Value::Vector(v)  => v.clone(),
-                    _ => return Err(self.trap(TrapReason::VerifierBug))
+                    _ => return Err(self.trap(TrapReason::VerifierBug("Type Mismatch".to_string())))
                 }
             }
         }
@@ -420,7 +442,7 @@ impl VirtualMachine {
                 match &*args[0] {
                     Value::Option(Some(inner)) => Ok(*inner.clone()),
                     Value::Option(None)        => Err(self.trap(TrapReason::UnwrapNone)),
-                    _                          => Err(self.trap(TrapReason::VerifierBug)),
+                    _                          => Err(self.trap(TrapReason::VerifierBug("Type Mismatch".to_string()))),
                 }
             }
 
@@ -433,7 +455,7 @@ impl VirtualMachine {
                 match &*args[0] {
                     Value::Result(Ok(inner)) => Ok(*inner.clone()),
                     Value::Result(Err(_))    => Err(self.trap(TrapReason::UnwrapErrOnOk)),
-                    _                        => Err(self.trap(TrapReason::VerifierBug)),
+                    _                        => Err(self.trap(TrapReason::VerifierBug("Type Mismatch".to_string()))),
                 }
             }
 
@@ -446,7 +468,7 @@ impl VirtualMachine {
                 match &*args[0] {
                     Value::Result(Err(inner)) => Ok(*inner.clone()),
                     Value::Result(Ok(_))      => Err(self.trap(TrapReason::UnwrapOkOnErr)),
-                    _                         => Err(self.trap(TrapReason::VerifierBug)),
+                    _                         => Err(self.trap(TrapReason::VerifierBug("Type Mismatch".to_string()))),
                 }
             }
         }
@@ -463,7 +485,7 @@ impl VirtualMachine {
             ($v:expr) => {
                 match &*$v {
                     Value::Integer(n) => *n,
-                    _ => return Err(self.trap(TrapReason::VerifierBug))
+                    _ => return Err(self.trap(TrapReason::VerifierBug("Type Mismatch".to_string())))
                 }
             }
         }
@@ -471,7 +493,7 @@ impl VirtualMachine {
             ($v:expr) => {
                 match &*$v {
                     Value::String(s)  => s.clone(),
-                    _ => return Err(self.trap(TrapReason::VerifierBug))
+                    _ => return Err(self.trap(TrapReason::VerifierBug("Type Mismatch".to_string())))
                 }
             }
         }
@@ -485,16 +507,26 @@ impl VirtualMachine {
                 let namespace  = str_!(arguments[0]);
                 let identifier = str_!(arguments[1]);
                 let value = match self.global_memory.try_read() {
-                    Ok(value) => Ok(Box::new(Value::Option(value.get(&(Namespace { 0: namespace }, Identifier { 0: identifier })).map(|v| Box::new(v.clone()))))),
+                    Ok(value) => Ok(Box::new(Value::Option(
+                        value.get(&(Namespace { 0: namespace }, Identifier { 0: identifier })).map(|v| Box::new(v.clone()))
+                    ))),
                     Err(error) => {
-                        let result = match error {
+                        match error {
                             TryLockError::Poisoned(value) => {
-                                value.into_inner();
-                                "Poisoned" // todo: todooooooooooooooooooooo
+                                self.emit(VirtualMachineEvent::Log(
+                                    VirtualMachineLog { level: VirtualMachineLogLevel::Warn, message: "global memory is poisoned".to_string() }
+                                ));
+                                Ok(Box::new(Value::Option(
+                                    value.get_ref().get(&(Namespace { 0: namespace }, Identifier { 0: identifier })).map(|v| Box::new(v.clone()))
+                                )))
                             },
-                            TryLockError::WouldBlock => "WouldBlock"
-                        };
-                        Err(Box::new(Value::Void))
+                            TryLockError::WouldBlock => {
+                                self.emit(VirtualMachineEvent::Log(
+                                    VirtualMachineLog { level: VirtualMachineLogLevel::Warn, message: "global memory is blocking".to_string() }
+                                ));
+                                Err(Box::new(Value::String("global memory is blocking".to_string())))
+                            }
+                        }
                     }
                 };
                 Ok(Value::Result(value))
@@ -507,9 +539,30 @@ impl VirtualMachine {
             | SpecialFunctions::WriteGlobalMemoryBoolean => {
                 let namespace  = str_!(arguments[0]);
                 let identifier = str_!(arguments[1]);
-                self.global_memory.try_write()
-                    .ok()
-                    .and_then(|mut m| m.insert((Namespace { 0: namespace }, Identifier { 0: identifier }), arguments[2].deref().clone()));
+                match self.global_memory.try_write() {
+                    Ok(mut value) => {
+                        value.insert(
+                            (Namespace { 0: namespace }, Identifier { 0: identifier }), arguments[2].deref().clone()).map(|v| Box::new(v.clone())
+                        );
+                    }
+                    Err(error) => {
+                        match error {
+                            TryLockError::Poisoned(mut value) => {
+                                self.emit(VirtualMachineEvent::Log(
+                                    VirtualMachineLog { level: VirtualMachineLogLevel::Warn, message: "global memory is poisoned".to_string() }
+                                ));
+                                value.get_mut().insert(
+                                    (Namespace { 0: namespace }, Identifier { 0: identifier }), arguments[2].deref().clone()).map(|v| Box::new(v.clone())
+                                );
+                            },
+                            TryLockError::WouldBlock => {
+                                self.emit(VirtualMachineEvent::Log(
+                                    VirtualMachineLog { level: VirtualMachineLogLevel::Warn, message: "global memory is blocking".to_string() }
+                                ));
+                            }
+                        }
+                    }
+                };
                 Ok(Value::Void)
             }
 

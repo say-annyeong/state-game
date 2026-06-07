@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
-use crate::instruction_run::instruction::Slot;
+use crate::instruction_run::instruction::{FunctionIdentifier, Slot};
+use crate::instruction_run::instruction_verifier::VerifyError;
 use crate::instruction_run::types::{Type, Value};
 
 pub(super) enum VirtualMachineEvent {
@@ -45,7 +46,8 @@ pub(super) enum TrapReason {
     IndexOutOfBounds { index: i64, length: usize },
     /// `StringGetChar` index out of bounds.
     StringIndexOutOfBounds { index: i64, length: usize },
-    VerifierBug
+    VerifierBug(String),
+    CustomFunctionArgumentsTypeMiss
 }
 
 pub(super) struct StateChange {
@@ -55,14 +57,14 @@ pub(super) struct StateChange {
 }
 
 pub(super) struct VirtualMachineCallEvent {
-    pub(super) self_identifier: u64,
-    pub(super) function_identifier: u64,
+    pub(super) self_identifier: FunctionIdentifier,
+    pub(super) function_identifier: FunctionIdentifier,
     pub(super) input: HashMap<Slot, Arc<Value>>,
     pub(super) output: HashMap<Slot, Arc<Value>>
 }
 
 impl VirtualMachineCallEvent {
-    pub fn new(self_identifier: u64, function_identifier: u64, input: HashMap<Slot, Arc<Value>>, output: HashMap<Slot, Arc<Value>>) -> Self {
+    pub fn new(self_identifier: FunctionIdentifier, function_identifier: FunctionIdentifier, input: HashMap<Slot, Arc<Value>>, output: HashMap<Slot, Arc<Value>>) -> Self {
         Self { self_identifier, function_identifier, input, output }
     }
 }

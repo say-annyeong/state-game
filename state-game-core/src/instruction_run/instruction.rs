@@ -1,6 +1,7 @@
 use crate::instruction_run::types::Type;
 
 pub(super) type Slot = u64;
+pub(super) type FunctionIdentifier = u64;
 
 #[derive(Clone, Debug, PartialEq)]
 pub(super) enum Instruction {
@@ -12,20 +13,20 @@ pub(super) enum Instruction {
 
     Call {
         function_name: Functions,
+        inputs: Vec<Slot>,
         output: Slot,
-        arguments: Vec<Slot>
     },
 
     SpecialCall {
         function_name: SpecialFunctions,
+        inputs: Vec<Slot>,
         output: Slot,
-        arguments: Vec<Slot>
     },
 
-    CallUserDefined {
-        function_identifier: u64,
-        output: Vec<Slot>,
-        arguments: Vec<Slot>
+    CallDefined {
+        function_identifier: FunctionIdentifier,
+        inputs: Vec<Slot>,
+        outputs: Vec<Slot>,
     },
 
     Jump {
@@ -144,6 +145,11 @@ impl SpecialFunctions {
 pub(super) struct FunctionSignature {
     pub(super) inputs:  &'static [Type],
     pub(super) outputs: Type,
+}
+
+pub(super) struct DefinedFunctionSignature {
+    pub(super) inputs: Box<[Type]>,
+    pub(super) outputs: Box<[Type]>
 }
 
 pub(super) struct FunctionRegistry<const N: usize> {

@@ -1,3 +1,3 @@
 [workspace]
-members = ["state-game-compiler","state-game-core", "state-game-mod", "state-game-run"]
+members = ["state-game-compiler","state-game-core", "state-game-mod", "state-game-runtime"]
 resolver = "3"

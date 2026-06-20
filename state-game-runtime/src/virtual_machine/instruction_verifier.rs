@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::sync::Arc;
-use crate::instruction_run::instruction::{
+use crate::virtual_machine::instruction::{
     DefinedFunctionSignature,
     FunctionIdentifier,
     FunctionRegistry,
@@ -11,9 +11,9 @@ use crate::instruction_run::instruction::{
     Slot,
     SpecialFunctions
 };
-use crate::instruction_run::types::Type;
+use crate::virtual_machine::types::Type;
 
-pub(super) const FUNCTION_REGISTRY: FunctionRegistry<{ Functions::COUNT }> = FunctionRegistry {
+pub const FUNCTION_REGISTRY: FunctionRegistry<{ Functions::COUNT }> = FunctionRegistry {
     functions: [
         FunctionSignature { inputs: &[Type::Integer, Type::Integer], outputs: Type::Integer },                               // AddInteger
         FunctionSignature { inputs: &[Type::Integer, Type::Integer], outputs: Type::Integer },                               // SubInteger
@@ -81,7 +81,7 @@ pub(super) const FUNCTION_REGISTRY: FunctionRegistry<{ Functions::COUNT }> = Fun
     ]
 };
 
-pub(super) const SPECIAL_FUNCTIONS_REGISTRY: FunctionRegistry<{ SpecialFunctions::COUNT }> = FunctionRegistry {
+pub const SPECIAL_FUNCTIONS_REGISTRY: FunctionRegistry<{ SpecialFunctions::COUNT }> = FunctionRegistry {
     functions: [
         FunctionSignature { inputs: &[Type::String, Type::String], outputs: Type::Result(&Type::Option(&Type::Integer), &Type::String) }, // ReadGlobalMemoryInteger
         FunctionSignature { inputs: &[Type::String, Type::String], outputs: Type::Result(&Type::Option(&Type::Float), &Type::String) },   // ReadGlobalMemoryFloat
@@ -99,7 +99,7 @@ pub(super) const SPECIAL_FUNCTIONS_REGISTRY: FunctionRegistry<{ SpecialFunctions
 };
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
-pub(super) enum VerifyError {
+pub enum VerifyError {
     /// A slot was read before it was assigned.
     UnboundSlot { instruction_pointer: usize, slot: Slot },
     /// The type of a slot did not match what was expected.
@@ -117,19 +117,19 @@ pub(super) enum VerifyError {
     DefinedFunctionReturnCountMismatch { instruction_pointer: usize, expected: usize, found: usize },
 }
 
-pub(super) struct InstructionVerifier {
+pub struct InstructionVerifier {
     instruction: Arc<[Instruction]>,
     defined_functions: Arc<HashMap<FunctionIdentifier, DefinedFunctionSignature>>
 }
 
 impl InstructionVerifier {
-    pub(super) fn new(instruction: Arc<[Instruction]>, defined_functions: Arc<HashMap<FunctionIdentifier, DefinedFunctionSignature>>) -> Self {
+    pub fn new(instruction: Arc<[Instruction]>, defined_functions: Arc<HashMap<FunctionIdentifier, DefinedFunctionSignature>>) -> Self {
         Self { instruction, defined_functions }
     }
 
     /// Verifies the instruction stream and returns all errors found.
     /// An empty Vec means the program is well-typed.
-    pub(super) fn verify(&self) -> Vec<VerifyError> {
+    pub fn verify(&self) -> Vec<VerifyError> {
         let instructions = &self.instruction;
         let len = instructions.len();
         let mut errors = Vec::new();
@@ -238,73 +238,84 @@ impl InstructionVerifier {
                     bind_slot(&mut slots, &mut errors, instruction_pointer, *output, sig.outputs.clone());
                 }
 
-                Instruction::CallDefined { function_identifier, inputs, outputs } => {
+                // ── CallDefined ─────────────────────────────────────────────
+                Instruction::CallDefined { function_identifier, inputs, destination_slots, source_slots } => {
                     match self.defined_functions.get(function_identifier) {
-                        Some(defined_function) => {
-                            if defined_function.inputs.len() == inputs.len() {
-                                for (defined_type, slot) in
-                                    defined_function.inputs.iter().zip(inputs.iter())
-                                {
-                                    match slots.get(slot) {
-                                        Some(found_type) => {
-                                            if !type_compatible(found_type, defined_type) {
-                                                errors.push(VerifyError::TypeMismatch {
-                                                    instruction_pointer,
-                                                    slot: *slot,
-                                                    found: found_type.clone(),
-                                                    expected: defined_type.clone()
-                                                })
-                                            }
-                                        }
-                                        None => {
-                                            errors.push(VerifyError::UnboundSlot {
-                                                instruction_pointer,
-                                                slot: *slot,
-                                            })
-                                        }
-                                    }
-                                }
-                            } else {
+                        None => {
+                            errors.push(VerifyError::CanNotFoundDefinedFunction {
+                                instruction_pointer,
+                                function_identifier: *function_identifier,
+                            });
+                        }
+                        Some(sig) => {
+                            // ── inputs: slots read by the callee ─────────────
+                            if inputs.len() != sig.inputs.len() {
                                 errors.push(VerifyError::DefinedFunctionArgumentCountMismatch {
                                     instruction_pointer,
+                                    expected: sig.inputs.len(),
                                     found: inputs.len(),
-                                    expected: defined_function.inputs.len(),
-                                })
-                            }
-
-                            if defined_function.outputs.len() == outputs.len() {
-                                for (defined_type, slot) in
-                                    defined_function.outputs.iter().zip(outputs.iter())
-                                {
+                                });
+                            } else {
+                                for (slot, expected_type) in inputs.iter().zip(sig.inputs.iter()) {
                                     match slots.get(slot) {
-                                        Some(found_type) => {
-                                            if !type_compatible(found_type, defined_type) {
-                                                errors.push(VerifyError::TypeMismatch {
-                                                    instruction_pointer,
-                                                    slot: *slot,
-                                                    found: found_type.clone(),
-                                                    expected: defined_type.clone()
-                                                })
-                                            }
-                                        }
-                                        None => {
-                                            errors.push(VerifyError::UnboundSlot {
+                                        None => errors.push(VerifyError::UnboundSlot {
+                                            instruction_pointer,
+                                            slot: *slot,
+                                        }),
+                                        Some(found_type) if !type_compatible(found_type, expected_type) => {
+                                            errors.push(VerifyError::TypeMismatch {
                                                 instruction_pointer,
                                                 slot: *slot,
-                                            })
+                                                expected: expected_type.clone(),
+                                                found: found_type.clone(),
+                                            });
                                         }
+                                        _ => {}
                                     }
                                 }
-                            } else {
+                            }
+
+                            // ── source_slots: output slots inside the callee ──
+                            // Must be bound and type-match the declared output types.
+                            if source_slots.len() != sig.destinations.len() {
                                 errors.push(VerifyError::DefinedFunctionReturnCountMismatch {
                                     instruction_pointer,
-                                    expected: defined_function.outputs.len(),
-                                    found: outputs.len(),
-                                })
+                                    expected: sig.destinations.len(),
+                                    found: source_slots.len(),
+                                });
+                            } else {
+                                for (slot, expected_type) in source_slots.iter().zip(sig.destinations.iter()) {
+                                    match slots.get(slot) {
+                                        None => errors.push(VerifyError::UnboundSlot {
+                                            instruction_pointer,
+                                            slot: *slot,
+                                        }),
+                                        Some(found_type) if !type_compatible(found_type, expected_type) => {
+                                            errors.push(VerifyError::TypeMismatch {
+                                                instruction_pointer,
+                                                slot: *slot,
+                                                expected: expected_type.clone(),
+                                                found: found_type.clone(),
+                                            });
+                                        }
+                                        _ => {}
+                                    }
+                                }
                             }
-                        }
-                        None => {
-                            errors.push(VerifyError::CanNotFoundDefinedFunction { instruction_pointer, function_identifier: *function_identifier})
+
+                            // ── destination_slots: caller slots written with output values ──
+                            // Count must match outputs; each slot is bound to the output type.
+                            if destination_slots.len() != sig.destinations.len() {
+                                errors.push(VerifyError::DefinedFunctionReturnCountMismatch {
+                                    instruction_pointer,
+                                    expected: sig.destinations.len(),
+                                    found: destination_slots.len(),
+                                });
+                            } else {
+                                for (slot, output_type) in destination_slots.iter().zip(sig.destinations.iter()) {
+                                    bind_slot(&mut slots, &mut errors, instruction_pointer, *slot, output_type.clone());
+                                }
+                            }
                         }
                     }
                 }
@@ -319,7 +330,7 @@ impl InstructionVerifier {
 /// write uses the same type as the originally established one.
 ///
 /// The first write wins: it sets the canonical type for the slot.
-/// Any later write that would change the type is recorded as `SlotRebound`.
+/// Any later write that would change the type is recorded as `TypeMismatch`.
 fn bind_slot(
     slots: &mut HashMap<Slot, Type>,
     errors: &mut Vec<VerifyError>,
@@ -332,11 +343,11 @@ fn bind_slot(
             slots.insert(slot, attempted);
         }
         Some(original) if *original != attempted => {
-            errors.push(VerifyError::SlotRebound {
+            errors.push(VerifyError::TypeMismatch {
                 instruction_pointer,
                 slot,
-                original: original.clone(),
-                attempted,
+                expected: original.clone(),
+                found: attempted,
             });
         }
         _ => {} // same type — no-op

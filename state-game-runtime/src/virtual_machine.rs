@@ -8,7 +8,7 @@ mod virtual_machine;
 mod test {
     use std::{ops::Deref, sync::Arc, thread};
     use std::collections::HashMap;
-    use crate::instruction_run::{
+    use crate::virtual_machine::{
         instruction::{Functions, Instruction, Literal},
         instruction_verifier::InstructionVerifier,
         types::{Type, Value},
@@ -33,7 +33,7 @@ mod test {
             Instruction::Call { function_name: Functions::AddInteger, inputs: vec![0, 1], output: 2 },
         ]);
         let (mut virtual_machine, logger) = make_virtual_machine_and_logger(instructions);
-        let (thread1, thread2) = (thread::spawn(move || { let _ = virtual_machine.run(); } ), thread::spawn(move || { let _ = logger.run(); } ));
+        let (thread1, thread2) = (thread::spawn(move || { let _ = virtual_machine.run_until_yield(); } ), thread::spawn(move || { let _ = logger.run(); } ));
         let _ = thread1.join();
         let _ = thread2.join();
     }
@@ -58,7 +58,7 @@ mod test {
         ]);
         let (mut virtual_machine, logger) = make_virtual_machine_and_logger(instructions);
         let (thread1, thread2) = (thread::spawn(move || {
-            let _ = virtual_machine.run();
+            let _ = virtual_machine.run_until_yield();
             let mut slots = Vec::new();
             for (k, v) in virtual_machine.slots {
                 slots.push((k, v));

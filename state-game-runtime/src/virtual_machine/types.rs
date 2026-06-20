@@ -1,5 +1,5 @@
 #[derive(Clone, Copy, Ord, PartialOrd, Eq, PartialEq, Debug)]
-pub(super) enum Type {
+pub enum Type {
     Integer,
     Float,
     String,
@@ -23,13 +23,13 @@ pub(super) enum Type {
     /// Only valid in function output positions.
     ///
     /// Represents the absence of a return value.
-    /// If a function is of type `Any -> Void`, then when using “Call function 1, 0”, the value `1` is not a value.
-    /// It does not exist and is not recorded in the used slot. However, if the slot is already in use, the value is removed.
+    /// If a function is of type `Any -> Void`, then when using “Call function 0, 1”, the value `1` is not a value.
+    /// It does not exist and is not recorded in the used slot.
     Void
 }
 
 #[derive(Clone, PartialEq, Debug)]
-pub(super) enum Value {
+pub enum Value {
     Integer(i64),
     Float(f64),
     String(String),
@@ -41,5 +41,5 @@ pub(super) enum Value {
     Result(Result<Box<Value>, Box<Value>>),
 
     Any, // can't use value
-    Void
+    Void // can't use value
 }

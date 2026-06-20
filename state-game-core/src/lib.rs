@@ -1,10 +1,8 @@
 mod bound;
+pub mod helper;
+mod mod_loader;
 
-mod instruction_run;
-mod helper;
-// =========================
-// Core Types
-// =========================
+use serde_json::Value;
 
 pub trait State: Send + Sync {}
 
@@ -81,6 +79,10 @@ pub trait SelectionStrategy {
 /// 1. base_priority: Defines the priority.
 /// 2. use_mix_inside_priority: Specifies whether the priority is shared with other registries.
 /// 3. namespace: Defines the namespace. If duplicated, registry conflicts occur and loading will fail.
+///
+/// Notes:
+/// These values are logically constant and must not change across calls.
+/// They are not derived from runtime State and are treated as immutable configuration.
 pub trait ModificationSpecifications {
     /// Base priority of this specification.
     ///
@@ -90,24 +92,47 @@ pub trait ModificationSpecifications {
     /// 3. base_priority = 0: default phase
     /// 4. base_priority > 0: post-phase (runs after default)
     ///
+    /// Each base_priority phase is NOT a set of independent results that get merged.
+    /// It is a single sequential fold: the State produced by one specification becomes
+    /// the input State for the next. There is no separate "merge" or "compose" step —
+    /// composition IS sequential application.
+    ///
     /// Notes (when base_priority is equal):
     ///
-    /// 1. Execution strategy:
-    ///    - Specifications with use_mix_inside_priority = true are executed first.
-    ///      - Transitions and choosers from these specifications are merged
-    ///        into a single sequence and ordered by inside_priority,
-    ///        allowing interleaved execution.
-    ///    - Specifications with use_mix_inside_priority = false are executed after that.
-    ///      - Each specification is executed independently without interleaving.
-    ///      - The execution order between these specifications is not guaranteed.
+    /// 1. Execution strategy (within the same base_priority phase):
+    ///    - Specifications with use_mix_inside_priority = true run first, as a single
+    ///      interleaved chain ordered by 'inside_priority'. Specifications from different
+    ///      namespaces may be interleaved within this chain.
+    ///      Note: If 'inside_priority' is identical, relative order between those
+    ///      specifications is NOT guaranteed.
+    ///    - Specifications with use_mix_inside_priority = false run after that, as a
+    ///      second chain. Each such specification receives the State produced by the
+    ///      previous one in this chain (mix chain's final output is the first input).
+    ///      Note: The order between these specifications is NOT guaranteed.
     ///
     /// 2. Result production:
-    ///    - Each specification produces its own result regardless of the execution strategy.
+    ///    - Each specification receives the current State (output of the previous
+    ///      specification in the chain, or the phase's initial State if it is first)
+    ///      and returns a new State. A specification is free to read and write any
+    ///      part of the State.
+    ///    - Preserving fields it does not intend to change (rather than reconstructing
+    ///      State from scratch) is RECOMMENDED for compatibility with other
+    ///      specifications, but is NOT enforced. A specification may overwrite or
+    ///      discard changes made by earlier specifications in the chain; this is the
+    ///      specification author's responsibility.
     ///
-    /// 3. Result composition:
-    ///    - All results are always combined after execution.
-    ///    - The composed result is used as the input for the next base_priority phase.
+    /// 3. Final result:
+    ///    - The State produced by the last specification in the non-mix chain (or the
+    ///      mix chain, if no non-mix specifications exist at this priority) becomes the
+    ///      input State for the next base_priority phase.
     ///
+    /// ## Determinism contract
+    /// When relative order is "not guaranteed" (identical inside_priority, or identical
+    /// base_priority within the non-mix chain), specifications occupying that tie are
+    /// REQUIRED to be commutative with each other — i.e. produce the same final State
+    /// regardless of which order they run in. This is NOT verified by the engine.
+    /// Violating this contract results in non-deterministic behavior that may only
+    /// surface when iteration/registration order happens to change.
     fn base_priority(&self) -> i64;
     fn use_mix_inside_priority(&self) -> bool;
 
@@ -117,15 +142,10 @@ pub trait ModificationSpecifications {
 
     /// optional implementations
     fn input_providers(&self) -> &[&dyn InputProvider];
-
     fn input_generators(&self) -> &[&dyn InputGenerator];
-
     fn input_filters(&self) -> &[&dyn InputFilter];
-
     fn input_weights(&self) -> &[&dyn InputWeight];
-
     fn transformers(&self) -> &[&dyn StateTransformer];
-
     fn terminal_conditions(&self) -> &[&dyn TerminalCondition];
 }
 

@@ -1,10 +1,10 @@
-use crate::instruction_run::types::Type;
+use crate::virtual_machine::types::Type;
 
-pub(super) type Slot = u64;
-pub(super) type FunctionIdentifier = u64;
+pub type Slot = u64;
+pub type FunctionIdentifier = u64;
 
 #[derive(Clone, Debug, PartialEq)]
-pub(super) enum Instruction {
+pub enum Instruction {
     Bind {
         slot: Slot,
         type_name: Type,
@@ -14,19 +14,30 @@ pub(super) enum Instruction {
     Call {
         function_name: Functions,
         inputs: Vec<Slot>,
+        /// The output must undergo the same type checking as Bind.
+        /// Execution will fail if there is a type mismatch.
         output: Slot,
     },
 
     SpecialCall {
         function_name: SpecialFunctions,
         inputs: Vec<Slot>,
+        /// The output must undergo the same type checking as Bind.
+        /// Execution will fail if there is a type mismatch.
         output: Slot,
     },
 
     CallDefined {
         function_identifier: FunctionIdentifier,
-        inputs: Vec<Slot>,
-        outputs: Vec<Slot>,
+        inputs: Vec<Slot>, // input
+        /// The output must undergo the same type checking as Bind.
+        /// Execution will fail if there is a type mismatch.
+        destination_slots: Vec<Slot>,
+        /// source
+        ///
+        /// WARNING: This slot does not belong to the currently running virtual machine.
+        /// It refers to a slot within the domain of a different running virtual machine.
+        source_slots: Vec<Slot>,
     },
 
     Jump {
@@ -41,7 +52,7 @@ pub(super) enum Instruction {
 }
 
 #[derive(Clone, Debug, PartialEq)]
-pub(super) enum Literal {
+pub enum Literal {
     Integer(i64),
     Float(f64),
     String(String),
@@ -51,7 +62,7 @@ pub(super) enum Literal {
 
 #[repr(usize)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub(super) enum Functions {
+pub enum Functions {
     AddInteger = 0,
     SubInteger = 1,
     MulInteger = 2,
@@ -118,12 +129,12 @@ pub(super) enum Functions {
 }
 
 impl Functions {
-    pub(super) const COUNT: usize = 63;
+    pub const COUNT: usize = 63;
 }
 
 #[repr(usize)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub(super) enum SpecialFunctions {
+pub enum SpecialFunctions {
     ReadGlobalMemoryInteger = 0,
     ReadGlobalMemoryFloat = 1,
     ReadGlobalMemoryString = 2,
@@ -139,19 +150,20 @@ pub(super) enum SpecialFunctions {
 }
 
 impl SpecialFunctions {
-    pub(super) const COUNT: usize = 12;
+    pub const COUNT: usize = 12;
 }
 
-pub(super) struct FunctionSignature {
-    pub(super) inputs:  &'static [Type],
-    pub(super) outputs: Type,
+pub struct FunctionSignature {
+    pub inputs:  &'static [Type],
+    pub outputs: Type,
 }
 
-pub(super) struct DefinedFunctionSignature {
-    pub(super) inputs: Box<[Type]>,
-    pub(super) outputs: Box<[Type]>
+pub struct DefinedFunctionSignature {
+    pub inputs: Box<[Type]>,
+    pub destinations: Box<[Type]>,
+    pub source: Box<[Type]>,
 }
 
-pub(super) struct FunctionRegistry<const N: usize> {
-    pub(super) functions: [FunctionSignature; N],
+pub struct FunctionRegistry<const N: usize> {
+    pub functions: [FunctionSignature; N],
 }

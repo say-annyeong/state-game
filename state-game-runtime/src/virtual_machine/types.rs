@@ -23,9 +23,7 @@ pub enum Type {
     /// Only valid in function output positions.
     ///
     /// Represents the absence of a return value.
-    /// If a function is of type `Any -> Void`, then when using “Call function 0, 1”, the value `1` is not a value.
-    /// It does not exist and is not recorded in the used slot.
-    Void
+    Void,
 }
 
 #[derive(Clone, PartialEq, Debug)]
@@ -41,5 +39,5 @@ pub enum Value {
     Result(Result<Box<Value>, Box<Value>>),
 
     Any, // can't use value
-    Void // can't use value
+    Void,
 }

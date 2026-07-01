@@ -1,3 +1,4 @@
+use crate::define_function_registry;
 use crate::virtual_machine::types::Type;
 
 pub type Slot = u64;
@@ -8,7 +9,7 @@ pub enum Instruction {
     Bind {
         slot: Slot,
         type_name: Type,
-        value: Literal
+        value: Literal,
     },
 
     Call {
@@ -27,7 +28,7 @@ pub enum Instruction {
         output: Slot,
     },
 
-    CallDefined {
+    DefinedCall {
         function_identifier: FunctionIdentifier,
         inputs: Vec<Slot>, // input
         /// The output must undergo the same type checking as Bind.
@@ -60,102 +61,322 @@ pub enum Literal {
     Boolean(bool),
 }
 
-#[repr(usize)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum Functions {
-    AddInteger = 0,
-    SubInteger = 1,
-    MulInteger = 2,
-    DivInteger = 3,
-    ModInteger = 4,
-    PowInteger = 5,
-    AddFloat = 6,
-    SubFloat = 7,
-    MulFloat = 8,
-    DivFloat = 9,
-    PowFloat = 10,
-    EqualInteger = 11,
-    NotEqualInteger = 12,
-    GreaterThanInteger = 13,
-    LessThanInteger = 14,
-    GreaterThanFloat = 15,
-    LessThanFloat = 16,
-    Not = 17,
-    And = 18,
-    Or = 19,
-    Xor = 20,
-    EqualString = 21,
-    StringLength = 22,
-    StringGetChar = 23,
-    VectorGetInteger = 24,
-    VectorGetFloat = 25,
-    VectorGetString = 26,
-    VectorGetChar = 27,
-    VectorGetBoolean = 28,
-    VectorInitInteger = 29,
-    VectorInitFloat = 30,
-    VectorInitString = 31,
-    VectorInitChar = 32,
-    VectorInitBoolean = 33,
-    VectorPushInteger = 34,
-    VectorPushFloat = 35,
-    VectorPushString = 36,
-    VectorPushChar = 37,
-    VectorPushBoolean = 38,
-    VectorPopInteger = 39,
-    VectorPopFloat = 40,
-    VectorPopString = 41,
-    VectorPopChar = 42,
-    VectorPopBoolean = 43,
-    IsSome = 44,
-    IsNone = 45,
-    IsOk = 46,
-    IsErr = 47,
-    UnwrapSomeInteger = 48,
-    UnwrapSomeFloat = 49,
-    UnwrapSomeString = 50,
-    UnwrapSomeChar = 51,
-    UnwrapSomeBoolean = 52,
-    UnwrapOkInteger = 53,
-    UnwrapOkFloat = 54,
-    UnwrapOkString = 55,
-    UnwrapOkChar = 56,
-    UnwrapOkBoolean = 57,
-    UnwrapErrInteger = 58,
-    UnwrapErrFloat = 59,
-    UnwrapErrString = 60,
-    UnwrapErrChar = 61,
-    UnwrapErrBoolean = 62,
-}
+define_function_registry!(
+    pub enum Functions;
+    pub const FUNCTION_REGISTRY;
+    
+    // AddInteger
+    AddInteger => {
+        inputs: [Type::Integer, Type::Integer],
+        output: Type::Integer
+    },
+    SubInteger => {
+        inputs: [Type::Integer, Type::Integer],
+        output: Type::Integer
+    },
+    MulInteger => {
+        inputs: [Type::Integer, Type::Integer],
+        output: Type::Integer
+    },
+    DivInteger => {
+        inputs: [Type::Integer, Type::Integer],
+        output: Type::Integer
+    },
+    ModInteger => {
+        inputs: [Type::Integer, Type::Integer],
+        output: Type::Integer
+    },
+    PowInteger => {
+        inputs: [Type::Integer, Type::Integer],
+        output: Type::Integer
+    },
+    AddFloat => {
+        inputs: [Type::Float, Type::Float],
+        output: Type::Float
+    },
+    SubFloat => {
+        inputs: [Type::Float, Type::Float],
+        output: Type::Float
+    },
+    MulFloat => {
+        inputs: [Type::Float, Type::Float],
+        output: Type::Float
+    },
+    DivFloat => {
+        inputs: [Type::Float, Type::Float],
+        output: Type::Float
+    },
+    PowFloat => {
+        inputs: [Type::Float, Type::Float],
+        output: Type::Float
+    },
+    EqualInteger => {
+        inputs: [Type::Integer, Type::Integer],
+        output: Type::Boolean
+    },
+    NotEqualInteger => {
+        inputs: [Type::Integer, Type::Integer],
+        output: Type::Boolean
+    },
+    GreaterThanInteger => {
+        inputs: [Type::Integer, Type::Integer],
+        output: Type::Boolean
+    },
+    LessThanInteger => {
+        inputs: [Type::Integer, Type::Integer],
+        output: Type::Boolean
+    },
+    GreaterThanFloat => {
+        inputs: [Type::Float, Type::Float],
+        output: Type::Boolean
+    },
+    LessThanFloat => {
+        inputs: [Type::Float, Type::Float],
+        output: Type::Boolean
+    },
+    Not => {
+        inputs: [Type::Boolean],
+        output: Type::Boolean
+    },
+    And => {
+        inputs: [Type::Boolean, Type::Boolean],
+        output: Type::Boolean
+    },
+    Or => {
+        inputs: [Type::Boolean, Type::Boolean],
+        output: Type::Boolean
+    },
+    Xor => {
+        inputs: [Type::Boolean, Type::Boolean],
+        output: Type::Boolean
+    },
+    EqualString => {
+        inputs: [Type::String, Type::String],
+        output: Type::Boolean
+    },
+    StringLength => {
+        inputs: [Type::String],
+        output: Type::Integer
+    },
+    StringGetChar => {
+        inputs: [Type::String, Type::Integer],
+        output: Type::Char
+    },
+    VectorGetInteger => {
+        inputs: [Type::Vector(&Type::Integer), Type::Integer],
+        output: Type::Integer
+    },
+    VectorGetFloat => {
+        inputs: [Type::Vector(&Type::Float), Type::Integer],
+        output: Type::Float
+    },
+    VectorGetString => {
+        inputs: [Type::Vector(&Type::String), Type::Integer],
+        output: Type::String
+    },
+    VectorGetChar => {
+        inputs: [Type::Vector(&Type::Char), Type::Integer],
+        output: Type::Char
+    },
+    VectorGetBoolean => {
+        inputs: [Type::Vector(&Type::Boolean), Type::Integer],
+        output: Type::Boolean
+    },
+    VectorInitInteger => {
+        inputs: [Type::Integer],
+        output: Type::Vector(&Type::Integer)
+    },
+    VectorInitFloat => {
+        inputs: [Type::Float],
+        output: Type::Vector(&Type::Float)
+    },
+    VectorInitString => {
+        inputs: [Type::String],
+        output: Type::Vector(&Type::String)
+    },
+    VectorInitChar => {
+        inputs: [Type::Char],
+        output: Type::Vector(&Type::Char)
+    },
+    VectorInitBoolean => {
+        inputs: [Type::Boolean],
+        output: Type::Vector(&Type::Boolean)
+    },
+    VectorPushInteger => {
+        inputs: [Type::Vector(&Type::Integer), Type::Integer],
+        output: Type::Vector(&Type::Integer)
+    },
+    VectorPushFloat => {
+        inputs: [Type::Vector(&Type::Float), Type::Float],
+        output: Type::Vector(&Type::Float)
+    },
+    VectorPushString => {
+        inputs: [Type::Vector(&Type::String), Type::String],
+        output: Type::Vector(&Type::String)
+    },
+    VectorPushChar => {
+        inputs: [Type::Vector(&Type::Char), Type::Char],
+        output: Type::Vector(&Type::Char)
+    },
+    VectorPushBoolean => {
+        inputs: [Type::Vector(&Type::Boolean), Type::Boolean],
+        output: Type::Vector(&Type::Boolean)
+    },
+    VectorPopInteger => {
+        inputs: [Type::Vector(&Type::Integer)],
+        output: Type::Vector(&Type::Integer)
+    },
+    VectorPopFloat => {
+        inputs: [Type::Vector(&Type::Float)],
+        output: Type::Vector(&Type::Float)
+    },
+    VectorPopString => {
+        inputs: [Type::Vector(&Type::String)],
+        output: Type::Vector(&Type::String)
+    },
+    VectorPopChar => {
+        inputs: [Type::Vector(&Type::Char)],
+        output: Type::Vector(&Type::Char)
+    },
+    VectorPopBoolean => {
+        inputs: [Type::Vector(&Type::Boolean)],
+        output: Type::Vector(&Type::Boolean)
+    },
+    IsSome => {
+        inputs: [Type::Option(&Type::Any)],
+        output: Type::Boolean
+    },
+    IsNone => {
+        inputs: [Type::Option(&Type::Any)],
+        output: Type::Boolean
+    },
+    IsOk => {
+        inputs: [Type::Result(&Type::Any, &Type::Any)],
+        output: Type::Boolean
+    },
+    IsErr => {
+        inputs: [Type::Result(&Type::Any, &Type::Any)],
+        output: Type::Boolean
+    },
+    UnwrapSomeInteger => {
+        inputs: [Type::Option(&Type::Integer)],
+        output: Type::Integer
+    },
+    UnwrapSomeFloat => {
+        inputs: [Type::Option(&Type::Float)],
+        output: Type::Float
+    },
+    UnwrapSomeString => {
+        inputs: [Type::Option(&Type::String)],
+        output: Type::String
+    },
+    UnwrapSomeChar => {
+        inputs: [Type::Option(&Type::Char)],
+        output: Type::Char
+    },
+    UnwrapSomeBoolean => {
+        inputs: [Type::Option(&Type::Boolean)],
+        output: Type::Boolean
+    },
+    UnwrapOkInteger => {
+        inputs: [Type::Result(&Type::Integer, &Type::Any)],
+        output: Type::Integer
+    },
+    UnwrapOkFloat => {
+        inputs: [Type::Result(&Type::Float, &Type::Any)],
+        output: Type::Float
+    },
+    UnwrapOkString => {
+        inputs: [Type::Result(&Type::String, &Type::Any)],
+        output: Type::String
+    },
+    UnwrapOkChar => {
+        inputs: [Type::Result(&Type::Char, &Type::Any)],
+        output: Type::Char
+    },
+    UnwrapOkBoolean => {
+        inputs: [Type::Result(&Type::Boolean, &Type::Any)],
+        output: Type::Boolean
+    },
+    UnwrapErrInteger => {
+        inputs: [Type::Result(&Type::Any, &Type::Integer)],
+        output: Type::Integer
+    },
+    UnwrapErrFloat => {
+        inputs: [Type::Result(&Type::Any, &Type::Float)],
+        output: Type::Float
+    },
+    UnwrapErrString => {
+        inputs: [Type::Result(&Type::Any, &Type::String)],
+        output: Type::String
+    },
+    UnwrapErrChar => {
+        inputs: [Type::Result(&Type::Any, &Type::Char)],
+        output: Type::Char
+        },
+    UnwrapErrBoolean => {
+        inputs: [Type::Result(&Type::Any, &Type::Boolean)],
+        output: Type::Boolean
+    }
+);
 
-impl Functions {
-    pub const COUNT: usize = 63;
-}
-
-#[repr(usize)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum SpecialFunctions {
-    ReadGlobalMemoryInteger = 0,
-    ReadGlobalMemoryFloat = 1,
-    ReadGlobalMemoryString = 2,
-    ReadGlobalMemoryChar = 3,
-    ReadGlobalMemoryBoolean = 4,
-    WriteGlobalMemoryInteger = 5,
-    WriteGlobalMemoryFloat = 6,
-    WriteGlobalMemoryString = 7,
-    WriteGlobalMemoryChar = 8,
-    WriteGlobalMemoryBoolean = 9,
-    GetInstructionPosition = 10,
-    GetModificationNamespaceList = 11,
-}
-
-impl SpecialFunctions {
-    pub const COUNT: usize = 12;
-}
+define_function_registry!(
+    pub enum SpecialFunctions;
+    pub const SPECIAL_FUNCTIONS_REGISTRY;
+    
+    ReadGlobalMemoryInteger => {
+        inputs: [Type::String, Type::String],
+        output: Type::Result(&Type::Integer, &Type::String)
+    },
+    ReadGlobalMemoryFloat => {
+        inputs: [Type::String, Type::String],
+        output: Type::Result(&Type::Float, &Type::String)
+    },
+    ReadGlobalMemoryString => {
+        inputs: [Type::String, Type::String],
+        output: Type::Result(&Type::String, &Type::String)
+    },
+    ReadGlobalMemoryChar => {
+        inputs: [Type::String, Type::String],
+        output: Type::Result(&Type::Char, &Type::String)
+    },
+    ReadGlobalMemoryBoolean => {
+        inputs: [Type::String, Type::String],
+        output: Type::Result(&Type::Boolean, &Type::String)
+    },
+    WriteGlobalMemoryInteger => {
+        inputs: [Type::String, Type::String, Type::Integer],
+        output: Type::Void
+    },
+    WriteGlobalMemoryFloat => {
+        inputs: [Type::String, Type::String, Type::Float],
+        output: Type::Void
+    },
+    WriteGlobalMemoryString => {
+        inputs: [Type::String, Type::String, Type::String],
+        output: Type::Void
+    },
+    WriteGlobalMemoryChar => {
+        inputs: [Type::String, Type::String, Type::Char],
+        output: Type::Void
+    },
+    WriteGlobalMemoryBoolean => {
+        inputs: [Type::String, Type::String, Type::Boolean],
+        output: Type::Void
+    },
+    GetInstructionPosition => {
+        inputs: [],
+        output: Type::Integer
+    },
+    GetModificationNamespaceList => {
+        inputs: [],
+        output: Type::Vector(&Type::String)
+    },
+);
 
 pub struct FunctionSignature {
-    pub inputs:  &'static [Type],
-    pub outputs: Type,
+    pub inputs: &'static [Type],
+    pub output: Type,
 }
 
 pub struct DefinedFunctionSignature {

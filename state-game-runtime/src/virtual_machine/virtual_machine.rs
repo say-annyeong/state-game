@@ -1,16 +1,22 @@
 use std::{
-    ops::Deref,
     collections::HashMap,
-    sync::{Arc, RwLock, TryLockError}
+    ops::Deref,
+    sync::{Arc, RwLock, TryLockError},
 };
+
 use crossbeam_channel::{Receiver, Sender};
+use dashmap::DashMap;
+
 use state_game_core::{Identifier, Namespace, helper::try_until};
+
 use crate::virtual_machine::{
+    event::{
+        StateChange, TrapReason, VirtualMachineCallEvent, VirtualMachineEvent, VirtualMachineLog,
+        VirtualMachineLogLevel, VirtualMachineTrap, VirtualMachineYield
+    },
     instruction::{FunctionIdentifier, Functions, Instruction, Literal, Slot, SpecialFunctions},
     types::{Type, Value},
-    event::{StateChange, TrapReason, VirtualMachineCallEvent, VirtualMachineEvent, VirtualMachineLog, VirtualMachineLogLevel, VirtualMachineTrap}
 };
-use crate::virtual_machine::event::VirtualMachineYield;
 // ── Instruction pointer step ─────────────────────────────────────────────────
 
 enum ExecutionResult {
@@ -24,7 +30,7 @@ enum ExecutionResult {
         inputs: HashMap<Slot, Arc<Value>>,
         destination_slots: Vec<Slot>,
         source_slots: Vec<Slot>,
-    }
+    },
 }
 
 // ── Virtual Machine ──────────────────────────────────────────────────────────
@@ -44,12 +50,14 @@ pub struct VirtualMachine {
     pub logger_sender: Sender<VirtualMachineEvent>,
     pub scheduler_sender: Sender<VirtualMachineCallEvent>,
     pub scheduler_receiver: Receiver<VirtualMachineCallEvent>,
-    pub self_identifier: u64,
+    pub self_identifier: FunctionIdentifier,
     pub instruction_pointer: usize,
     pub instructions: Arc<[Instruction]>,
     pub slots: HashMap<Slot, Arc<Value>>,
-    pub global_memory: Arc<RwLock<HashMap<(Namespace, Identifier), Value>>>,
+    pub global_memory: Arc<RwLock<DashMap<(Namespace, Identifier), Value>>>,
     pub modification_namespace_list: Arc<[Namespace]>,
+    pub input_slots: HashMap<Slot, Arc<Value>>,
+    pub output_slots: HashMap<Slot, Arc<Value>>,
 }
 
 impl VirtualMachine {
@@ -59,8 +67,19 @@ impl VirtualMachine {
         scheduler_receiver: Receiver<VirtualMachineCallEvent>,
         self_identifier: FunctionIdentifier,
         instructions: Arc<[Instruction]>,
+        global_memory: Arc<RwLock<DashMap<(Namespace, Identifier), Value>>>,
+        modification_namespace_list: Arc<[Namespace]>,
     ) -> Self {
-        Self::with_instruction_pointer(logger_sender, scheduler_sender, scheduler_receiver, self_identifier, instructions, 0)
+        Self::with_instruction_pointer(
+            logger_sender,
+            scheduler_sender,
+            scheduler_receiver,
+            self_identifier,
+            instructions,
+            0,
+            global_memory,
+            modification_namespace_list,
+        )
     }
 
     pub fn with_instruction_pointer(
@@ -69,7 +88,9 @@ impl VirtualMachine {
         scheduler_receiver: Receiver<VirtualMachineCallEvent>,
         self_identifier: FunctionIdentifier,
         instructions: Arc<[Instruction]>,
-        instruction_pointer: usize
+        instruction_pointer: usize,
+        global_memory: Arc<RwLock<DashMap<(Namespace, Identifier), Value>>>,
+        modification_namespace_list: Arc<[Namespace]>,
     ) -> Self {
         Self {
             logger_sender,
@@ -79,8 +100,10 @@ impl VirtualMachine {
             instruction_pointer,
             instructions,
             slots: HashMap::new(),
-            global_memory: Arc::new(RwLock::new(HashMap::new())), // todo: this field value from argument new function
-            modification_namespace_list: Arc::new([]), // todo: this field value from argument new function
+            global_memory,
+            modification_namespace_list,
+            input_slots: HashMap::new(),
+            output_slots: HashMap::new(),
         }
     }
 
@@ -91,7 +114,7 @@ impl VirtualMachine {
         self_identifier: FunctionIdentifier,
         instruction_pointer: usize,
         instructions: Arc<[Instruction]>,
-        slots: HashMap<Slot, Arc<Value>>
+        input_slots: HashMap<Slot, Arc<Value>>,
     ) -> Self {
         Self {
             logger_sender: self.logger_sender.clone(),
@@ -100,9 +123,11 @@ impl VirtualMachine {
             self_identifier,
             instruction_pointer,
             instructions,
-            slots,
+            slots: HashMap::new(),
             global_memory: self.global_memory.clone(),
             modification_namespace_list: self.modification_namespace_list.clone(),
+            input_slots,
+            output_slots: HashMap::new(),
         }
     }
 
@@ -148,29 +173,10 @@ impl VirtualMachine {
         }));
     }
 
-    fn call(&self, function_identifier: FunctionIdentifier, input: &HashMap<Slot, Arc<Value>>, output: &HashMap<Slot, Arc<Value>>) -> Option<HashMap<Slot, Arc<Value>>> {
-        match try_until(|| self.scheduler_sender.send(VirtualMachineCallEvent::new(self.self_identifier, function_identifier, input.clone(), output.clone()))) {
-            Ok(_) => {}
-            Err(_error) => return None
-        }
-
-        let result = match self.scheduler_receiver.recv() {
-            Ok(result) => result,
-            Err(_error) => return None
-        };
-
-        Some(result.output)
-    }
-
     // ── Main loop ─────────────────────────────────────────────────────────────
 
-    pub fn run_until_yield(
-        &mut self,
-    ) -> Result<VirtualMachineYield, VirtualMachineTrap> {
-        self.log(
-            VirtualMachineLogLevel::Info,
-            "Virtual Machine Resume"
-        );
+    pub fn run_until_yield(&mut self) -> Result<VirtualMachineYield, VirtualMachineTrap> {
+        self.log(VirtualMachineLogLevel::Info, "Virtual Machine Resume");
 
         while self.instruction_pointer < self.instructions.len() {
             let instr = self.instructions[self.instruction_pointer].clone();
@@ -185,29 +191,23 @@ impl VirtualMachine {
                 }
 
                 Ok(ExecutionResult::YieldCall {
-                       function_identifier,
-                       inputs,
-                       outputs,
-                   }) => {
-                    return Ok(
-                        VirtualMachineYield::Call {
-                            function_identifier,
-                            inputs,
-                            outputs,
-                        }
-                    );
+                    function_identifier,
+                    inputs,
+                    destination_slots,
+                    source_slots,
+                }) => {
+                    return Ok(VirtualMachineYield::Call {
+                        function_identifier,
+                        inputs,
+                        destination_slots,
+                        source_slots,
+                    });
                 }
 
                 Err(trap) => {
-                    self.emit(
-                        VirtualMachineEvent::Trap(
-                            trap.clone()
-                        )
-                    );
+                    self.emit(VirtualMachineEvent::Trap(trap.clone()));
 
-                    self.emit(
-                        VirtualMachineEvent::ExecutionFinished
-                    );
+                    self.emit(VirtualMachineEvent::ExecutionFinished);
 
                     return Err(trap);
                 }
@@ -226,10 +226,7 @@ impl VirtualMachine {
         values: HashMap<Slot, Arc<Value>>,
     ) -> Result<(), VirtualMachineTrap> {
         for (slot, value) in values {
-            self.slots.insert(
-                slot,
-                value,
-            );
+            self.slots.insert(slot, value);
         }
 
         self.instruction_pointer += 1;
@@ -239,22 +236,29 @@ impl VirtualMachine {
 
     // ── Instruction dispatch ──────────────────────────────────────────────────
 
-    fn execute(
-        &mut self,
-        instr: &Instruction,
-    ) -> Result<ExecutionResult, VirtualMachineTrap> {
+    fn execute(&mut self, instr: &Instruction) -> Result<ExecutionResult, VirtualMachineTrap> {
         match instr {
             // ── Bind ──────────────────────────────────────────────────────────
-            Instruction::Bind { slot, type_name, value } => {
-                let v = parse_literal(type_name, value)
-                    .ok_or_else(|| self.trap(TrapReason::VerifierBug("Type Mismatch".to_string())))?;
+            Instruction::Bind {
+                slot,
+                type_name,
+                value,
+            } => {
+                let v = parse_literal(type_name, value).ok_or_else(|| {
+                    self.trap(TrapReason::VerifierBug("Type Mismatch".to_string()))
+                })?;
                 self.write(*slot, Arc::new(v));
                 Ok(ExecutionResult::Advance)
             }
 
             // ── Call ──────────────────────────────────────────────────────────
-            Instruction::Call { function_name, inputs, output } => {
-                let args = inputs.iter()
+            Instruction::Call {
+                function_name,
+                inputs,
+                output,
+            } => {
+                let args = inputs
+                    .iter()
                     .map(|s| self.read(*s))
                     .collect::<Result<Vec<_>, _>>()?;
                 let result = self.dispatch(*function_name, &args)?;
@@ -264,7 +268,10 @@ impl VirtualMachine {
 
             // ── Jump ──────────────────────────────────────────────────────────
             Instruction::Jump { target_position } => {
-                self.log(VirtualMachineLogLevel::Debug, format!("Jump to {}", target_position));
+                self.log(
+                    VirtualMachineLogLevel::Debug,
+                    format!("Jump to {}", target_position),
+                );
                 Ok(ExecutionResult::Goto(*target_position))
             }
 
@@ -277,21 +284,40 @@ impl VirtualMachine {
                 let v = self.read(*condition)?;
                 let b = match &*v {
                     Value::Boolean(b) => *b,
-                    _ => return Err(self.trap(TrapReason::VerifierBug("Type Mismatch".to_string()))),
+                    _ => {
+                        return Err(self.trap(TrapReason::VerifierBug("Type Mismatch".to_string())));
+                    }
                 };
-                self.log(VirtualMachineLogLevel::Debug, format!("Jump positions. true: {}, false: {}", true_target_position, false_target_position));
+                self.log(
+                    VirtualMachineLogLevel::Debug,
+                    format!(
+                        "Jump positions. true: {}, false: {}",
+                        true_target_position, false_target_position
+                    ),
+                );
                 Ok(ExecutionResult::Goto(if b {
-                    self.log(VirtualMachineLogLevel::Debug, format!("Jump to {}", true_target_position));
+                    self.log(
+                        VirtualMachineLogLevel::Debug,
+                        format!("Jump to {}", true_target_position),
+                    );
                     *true_target_position
                 } else {
-                    self.log(VirtualMachineLogLevel::Debug, format!("Jump to {}", false_target_position));
+                    self.log(
+                        VirtualMachineLogLevel::Debug,
+                        format!("Jump to {}", false_target_position),
+                    );
                     *false_target_position
                 }))
             }
 
             // ── SpecialCall ───────────────────────────────────────────────────
-            Instruction::SpecialCall { function_name, inputs, output } => {
-                let args = inputs.iter()
+            Instruction::SpecialCall {
+                function_name,
+                inputs,
+                output,
+            } => {
+                let args = inputs
+                    .iter()
                     .map(|s| self.read(*s))
                     .collect::<Result<Vec<_>, _>>()?;
                 let result = self.special_dispatch(*function_name, &args)?;
@@ -299,7 +325,7 @@ impl VirtualMachine {
                 Ok(ExecutionResult::Advance)
             }
 
-            Instruction::CallDefined {
+            Instruction::DefinedCall {
                 function_identifier,
                 inputs,
                 destination_slots,
@@ -315,111 +341,131 @@ impl VirtualMachine {
                         result.insert(*slot, read);
                     }
                     result
-                };;
+                };
 
-                Ok(
-                    ExecutionResult::YieldCall {
-                        function_identifier: *function_identifier,
-                        inputs: resolved_inputs,
-                        destination_slots: destination_slots.clone(),
-                        source_slots: source_slots.clone(),
-                    }
-                )
+                Ok(ExecutionResult::YieldCall {
+                    function_identifier: *function_identifier,
+                    inputs: resolved_inputs,
+                    destination_slots: destination_slots.clone(),
+                    source_slots: source_slots.clone(),
+                })
             }
         }
     }
 
     // ── Function dispatch ─────────────────────────────────────────────────────
 
-    fn dispatch(
-        &self,
-        func: Functions,
-        args: &[Arc<Value>],
-    ) -> Result<Value, VirtualMachineTrap> {
+    fn dispatch(&self, func: Functions, args: &[Arc<Value>]) -> Result<Value, VirtualMachineTrap> {
         // Convenience extractors — return VerifierBug trap on wrong variant.
         macro_rules! int {
             ($v:expr) => {
                 match &*$v {
                     Value::Integer(n) => *n,
-                    _ => return Err(self.trap(TrapReason::VerifierBug("Type Mismatch".to_string()))),
+                    _ => {
+                        return Err(self.trap(TrapReason::VerifierBug("Type Mismatch".to_string())))
+                    }
                 }
-            }
+            };
         }
         macro_rules! float {
             ($v:expr) => {
                 match &*$v {
-                    Value::Float(f)   => *f,
-                    _ => return Err(self.trap(TrapReason::VerifierBug("Type Mismatch".to_string())))
+                    Value::Float(f) => *f,
+                    _ => {
+                        return Err(self.trap(TrapReason::VerifierBug("Type Mismatch".to_string())))
+                    }
                 }
-            }
+            };
         }
         macro_rules! bool_ {
             ($v:expr) => {
                 match &*$v {
                     Value::Boolean(b) => *b,
-                    _ => return Err(self.trap(TrapReason::VerifierBug("Type Mismatch".to_string())))
+                    _ => {
+                        return Err(self.trap(TrapReason::VerifierBug("Type Mismatch".to_string())))
+                    }
                 }
-            }
+            };
         }
         macro_rules! str_ {
             ($v:expr) => {
                 match &*$v {
-                    Value::String(s)  => s.clone(),
-                    _ => return Err(self.trap(TrapReason::VerifierBug("Type Mismatch".to_string())))
+                    Value::String(s) => s.clone(),
+                    _ => {
+                        return Err(self.trap(TrapReason::VerifierBug("Type Mismatch".to_string())))
+                    }
                 }
-            }
+            };
         }
         macro_rules! vec_ {
             ($v:expr) => {
                 match &*$v {
-                    Value::Vector(v)  => v.clone(),
-                    _ => return Err(self.trap(TrapReason::VerifierBug("Type Mismatch".to_string())))
+                    Value::Vector(v) => v.clone(),
+                    _ => {
+                        return Err(self.trap(TrapReason::VerifierBug("Type Mismatch".to_string())))
+                    }
                 }
-            }
+            };
         }
 
         match func {
             // ── Integer arithmetic ────────────────────────────────────────────
             Functions::AddInteger => {
                 if args.len() != 2 {
-                    return Err(self.trap(TrapReason::VerifierBug("Argument count Mismatch".to_string())))
+                    return Err(self.trap(TrapReason::VerifierBug(
+                        "Argument count Mismatch".to_string(),
+                    )));
                 }
                 Ok(Value::Integer(int!(args[0]).wrapping_add(int!(args[1]))))
-            },
+            }
             Functions::SubInteger => {
                 if args.len() != 2 {
-                    return Err(self.trap(TrapReason::VerifierBug("Argument count Mismatch".to_string())))
+                    return Err(self.trap(TrapReason::VerifierBug(
+                        "Argument count Mismatch".to_string(),
+                    )));
                 }
                 Ok(Value::Integer(int!(args[0]).wrapping_sub(int!(args[1]))))
-            },
+            }
             Functions::MulInteger => {
                 if args.len() != 2 {
-                    return Err(self.trap(TrapReason::VerifierBug("Argument count Mismatch".to_string())))
+                    return Err(self.trap(TrapReason::VerifierBug(
+                        "Argument count Mismatch".to_string(),
+                    )));
                 }
                 Ok(Value::Integer(int!(args[0]).wrapping_mul(int!(args[1]))))
-            },
+            }
             Functions::DivInteger => {
                 if args.len() != 2 {
-                    return Err(self.trap(TrapReason::VerifierBug("Argument count Mismatch".to_string())))
+                    return Err(self.trap(TrapReason::VerifierBug(
+                        "Argument count Mismatch".to_string(),
+                    )));
                 }
                 let rhs = int!(args[1]);
-                if rhs == 0 { return Err(self.trap(TrapReason::DivisionByZero)); }
+                if rhs == 0 {
+                    return Err(self.trap(TrapReason::DivisionByZero));
+                }
                 Ok(Value::Integer(int!(args[0]) / rhs))
             }
             Functions::ModInteger => {
                 if args.len() != 2 {
-                    return Err(self.trap(TrapReason::VerifierBug("Argument count Mismatch".to_string())))
+                    return Err(self.trap(TrapReason::VerifierBug(
+                        "Argument count Mismatch".to_string(),
+                    )));
                 }
                 let rhs = int!(args[1]);
-                if rhs == 0 { return Err(self.trap(TrapReason::DivisionByZero)); }
+                if rhs == 0 {
+                    return Err(self.trap(TrapReason::DivisionByZero));
+                }
                 Ok(Value::Integer(int!(args[0]) % rhs))
             }
             Functions::PowInteger => {
                 if args.len() != 2 {
-                    return Err(self.trap(TrapReason::VerifierBug("Argument count Mismatch".to_string())))
+                    return Err(self.trap(TrapReason::VerifierBug(
+                        "Argument count Mismatch".to_string(),
+                    )));
                 }
                 let base = int!(args[0]);
-                let exp  = int!(args[1]);
+                let exp = int!(args[1]);
                 let exp_u = u32::try_from(exp).unwrap_or(0);
                 Ok(Value::Integer(base.wrapping_pow(exp_u)))
             }
@@ -427,71 +473,93 @@ impl VirtualMachine {
             // ── Float arithmetic ──────────────────────────────────────────────
             Functions::AddFloat => {
                 if args.len() != 2 {
-                    return Err(self.trap(TrapReason::VerifierBug("Argument count Mismatch".to_string())))
+                    return Err(self.trap(TrapReason::VerifierBug(
+                        "Argument count Mismatch".to_string(),
+                    )));
                 }
                 Ok(Value::Float(float!(args[0]) + float!(args[1])))
             }
             Functions::SubFloat => {
                 if args.len() != 2 {
-                    return Err(self.trap(TrapReason::VerifierBug("Argument count Mismatch".to_string())))
+                    return Err(self.trap(TrapReason::VerifierBug(
+                        "Argument count Mismatch".to_string(),
+                    )));
                 }
                 Ok(Value::Float(float!(args[0]) - float!(args[1])))
             }
             Functions::MulFloat => {
                 if args.len() != 2 {
-                    return Err(self.trap(TrapReason::VerifierBug("Argument count Mismatch".to_string())))
+                    return Err(self.trap(TrapReason::VerifierBug(
+                        "Argument count Mismatch".to_string(),
+                    )));
                 }
                 Ok(Value::Float(float!(args[0]) * float!(args[1])))
             }
             Functions::DivFloat => {
                 if args.len() != 2 {
-                    return Err(self.trap(TrapReason::VerifierBug("Argument count Mismatch".to_string())))
+                    return Err(self.trap(TrapReason::VerifierBug(
+                        "Argument count Mismatch".to_string(),
+                    )));
                 }
                 Ok(Value::Float(float!(args[0]) / float!(args[1])))
             }
             Functions::PowFloat => {
                 if args.len() != 2 {
-                    return Err(self.trap(TrapReason::VerifierBug("Argument count Mismatch".to_string())))
+                    return Err(self.trap(TrapReason::VerifierBug(
+                        "Argument count Mismatch".to_string(),
+                    )));
                 }
                 Ok(Value::Float(float!(args[0]).powf(float!(args[1]))))
             }
 
             // ── Integer comparisons ───────────────────────────────────────────
-            Functions::EqualInteger       => {
+            Functions::EqualInteger => {
                 if args.len() != 2 {
-                    return Err(self.trap(TrapReason::VerifierBug("Argument count Mismatch".to_string())))
+                    return Err(self.trap(TrapReason::VerifierBug(
+                        "Argument count Mismatch".to_string(),
+                    )));
                 }
                 Ok(Value::Boolean(int!(args[0]) == int!(args[1])))
-            },
-            Functions::NotEqualInteger    => {
+            }
+            Functions::NotEqualInteger => {
                 if args.len() != 2 {
-                    return Err(self.trap(TrapReason::VerifierBug("Argument count Mismatch".to_string())))
+                    return Err(self.trap(TrapReason::VerifierBug(
+                        "Argument count Mismatch".to_string(),
+                    )));
                 }
                 Ok(Value::Boolean(int!(args[0]) != int!(args[1])))
             }
             Functions::GreaterThanInteger => {
                 if args.len() != 2 {
-                    return Err(self.trap(TrapReason::VerifierBug("Argument count Mismatch".to_string())))
+                    return Err(self.trap(TrapReason::VerifierBug(
+                        "Argument count Mismatch".to_string(),
+                    )));
                 }
-                Ok(Value::Boolean(int!(args[0]) >  int!(args[1])))
+                Ok(Value::Boolean(int!(args[0]) > int!(args[1])))
             }
-            Functions::LessThanInteger    => {
+            Functions::LessThanInteger => {
                 if args.len() != 2 {
-                    return Err(self.trap(TrapReason::VerifierBug("Argument count Mismatch".to_string())))
+                    return Err(self.trap(TrapReason::VerifierBug(
+                        "Argument count Mismatch".to_string(),
+                    )));
                 }
-                Ok(Value::Boolean(int!(args[0]) <  int!(args[1])))
+                Ok(Value::Boolean(int!(args[0]) < int!(args[1])))
             }
 
             // ── Float comparisons ─────────────────────────────────────────────
             Functions::GreaterThanFloat => {
                 if args.len() != 2 {
-                    return Err(self.trap(TrapReason::VerifierBug("Argument count Mismatch".to_string())))
+                    return Err(self.trap(TrapReason::VerifierBug(
+                        "Argument count Mismatch".to_string(),
+                    )));
                 }
                 Ok(Value::Boolean(float!(args[0]) > float!(args[1])))
             }
-            Functions::LessThanFloat    => {
+            Functions::LessThanFloat => {
                 if args.len() != 2 {
-                    return Err(self.trap(TrapReason::VerifierBug("Argument count Mismatch".to_string())))
+                    return Err(self.trap(TrapReason::VerifierBug(
+                        "Argument count Mismatch".to_string(),
+                    )));
                 }
                 Ok(Value::Boolean(float!(args[0]) < float!(args[1])))
             }
@@ -499,53 +567,73 @@ impl VirtualMachine {
             // ── Boolean logic ─────────────────────────────────────────────────
             Functions::Not => {
                 if args.len() != 1 {
-                    return Err(self.trap(TrapReason::VerifierBug("Argument count Mismatch".to_string())))
+                    return Err(self.trap(TrapReason::VerifierBug(
+                        "Argument count Mismatch".to_string(),
+                    )));
                 }
                 Ok(Value::Boolean(!bool_!(args[0])))
-            },
+            }
             Functions::And => {
                 if args.len() != 2 {
-                    return Err(self.trap(TrapReason::VerifierBug("Argument count Mismatch".to_string())))
+                    return Err(self.trap(TrapReason::VerifierBug(
+                        "Argument count Mismatch".to_string(),
+                    )));
                 }
                 Ok(Value::Boolean(bool_!(args[0]) && bool_!(args[1])))
             }
-            Functions::Or  => {
+            Functions::Or => {
                 if args.len() != 2 {
-                    return Err(self.trap(TrapReason::VerifierBug("Argument count Mismatch".to_string())))
+                    return Err(self.trap(TrapReason::VerifierBug(
+                        "Argument count Mismatch".to_string(),
+                    )));
                 }
                 Ok(Value::Boolean(bool_!(args[0]) || bool_!(args[1])))
             }
             Functions::Xor => {
                 if args.len() != 2 {
-                    return Err(self.trap(TrapReason::VerifierBug("Argument count Mismatch".to_string())))
+                    return Err(self.trap(TrapReason::VerifierBug(
+                        "Argument count Mismatch".to_string(),
+                    )));
                 }
-                Ok(Value::Boolean(bool_!(args[0]) ^  bool_!(args[1])))
+                Ok(Value::Boolean(bool_!(args[0]) ^ bool_!(args[1])))
             }
 
             // ── String operations ─────────────────────────────────────────────
-            Functions::EqualString  => {
+            Functions::EqualString => {
                 if args.len() != 2 {
-                    return Err(self.trap(TrapReason::VerifierBug("Argument count Mismatch".to_string())))
+                    return Err(self.trap(TrapReason::VerifierBug(
+                        "Argument count Mismatch".to_string(),
+                    )));
                 }
                 Ok(Value::Boolean(str_!(args[0]) == str_!(args[1])))
-            },
+            }
             Functions::StringLength => {
                 if args.len() != 1 {
-                    return Err(self.trap(TrapReason::VerifierBug("Argument count Mismatch".to_string())))
+                    return Err(self.trap(TrapReason::VerifierBug(
+                        "Argument count Mismatch".to_string(),
+                    )));
                 }
                 Ok(Value::Integer(str_!(args[0]).chars().count() as i64))
-            },
+            }
             Functions::StringGetChar => {
                 if args.len() != 2 {
-                    return Err(self.trap(TrapReason::VerifierBug("Argument count Mismatch".to_string())))
+                    return Err(self.trap(TrapReason::VerifierBug(
+                        "Argument count Mismatch".to_string(),
+                    )));
                 }
-                let s   = str_!(args[0]);
+                let s = str_!(args[0]);
                 let idx = int!(args[1]);
                 let chars: Vec<char> = s.chars().collect();
                 let len = chars.len();
-                let i = usize::try_from(idx).ok().filter(|&i| i < len).ok_or_else(|| {
-                    self.trap(TrapReason::StringIndexOutOfBounds { index: idx, length: len })
-                })?;
+                let i = usize::try_from(idx)
+                    .ok()
+                    .filter(|&i| i < len)
+                    .ok_or_else(|| {
+                        self.trap(TrapReason::StringIndexOutOfBounds {
+                            index: idx,
+                            length: len,
+                        })
+                    })?;
                 Ok(Value::Char(chars[i]))
             }
 
@@ -556,14 +644,22 @@ impl VirtualMachine {
             | Functions::VectorGetChar
             | Functions::VectorGetBoolean => {
                 if args.len() != 2 {
-                    return Err(self.trap(TrapReason::VerifierBug("Argument count Mismatch".to_string())))
+                    return Err(self.trap(TrapReason::VerifierBug(
+                        "Argument count Mismatch".to_string(),
+                    )));
                 }
-                let v   = vec_!(args[0]);
+                let v = vec_!(args[0]);
                 let idx = int!(args[1]);
                 let len = v.len();
-                let i = usize::try_from(idx).ok().filter(|&i| i < len).ok_or_else(|| {
-                    self.trap(TrapReason::IndexOutOfBounds { index: idx, length: len })
-                })?;
+                let i = usize::try_from(idx)
+                    .ok()
+                    .filter(|&i| i < len)
+                    .ok_or_else(|| {
+                        self.trap(TrapReason::IndexOutOfBounds {
+                            index: idx,
+                            length: len,
+                        })
+                    })?;
                 Ok(v[i].clone())
             }
 
@@ -574,7 +670,9 @@ impl VirtualMachine {
             | Functions::VectorInitChar
             | Functions::VectorInitBoolean => {
                 if args.len() != 1 {
-                    return Err(self.trap(TrapReason::VerifierBug("Argument count Mismatch".to_string())))
+                    return Err(self.trap(TrapReason::VerifierBug(
+                        "Argument count Mismatch".to_string(),
+                    )));
                 }
                 Ok(Value::Vector(vec![(*args[0]).clone()]))
             }
@@ -586,7 +684,9 @@ impl VirtualMachine {
             | Functions::VectorPushChar
             | Functions::VectorPushBoolean => {
                 if args.len() != 2 {
-                    return Err(self.trap(TrapReason::VerifierBug("Argument count Mismatch".to_string())))
+                    return Err(self.trap(TrapReason::VerifierBug(
+                        "Argument count Mismatch".to_string(),
+                    )));
                 }
                 let mut v = vec_!(args[0]);
                 v.push((*args[1]).clone());
@@ -600,11 +700,16 @@ impl VirtualMachine {
             | Functions::VectorPopChar
             | Functions::VectorPopBoolean => {
                 if args.len() != 1 {
-                    return Err(self.trap(TrapReason::VerifierBug("Argument count Mismatch".to_string())))
+                    return Err(self.trap(TrapReason::VerifierBug(
+                        "Argument count Mismatch".to_string(),
+                    )));
                 }
                 let mut v = vec_!(args[0]);
                 if v.is_empty() {
-                    return Err(self.trap(TrapReason::IndexOutOfBounds { index: -1, length: 0 }));
+                    return Err(self.trap(TrapReason::IndexOutOfBounds {
+                        index: -1,
+                        length: 0,
+                    }));
                 }
                 v.pop();
                 Ok(Value::Vector(v))
@@ -613,25 +718,33 @@ impl VirtualMachine {
             // ── Option / Result inspection ────────────────────────────────────
             Functions::IsSome => {
                 if args.len() != 1 {
-                    return Err(self.trap(TrapReason::VerifierBug("Argument count Mismatch".to_string())))
+                    return Err(self.trap(TrapReason::VerifierBug(
+                        "Argument count Mismatch".to_string(),
+                    )));
                 }
                 Ok(Value::Boolean(matches!(&*args[0], Value::Option(Some(_)))))
-            },
+            }
             Functions::IsNone => {
                 if args.len() != 1 {
-                    return Err(self.trap(TrapReason::VerifierBug("Argument count Mismatch".to_string())))
+                    return Err(self.trap(TrapReason::VerifierBug(
+                        "Argument count Mismatch".to_string(),
+                    )));
                 }
                 Ok(Value::Boolean(matches!(&*args[0], Value::Option(None))))
             }
-            Functions::IsOk   => {
+            Functions::IsOk => {
                 if args.len() != 1 {
-                    return Err(self.trap(TrapReason::VerifierBug("Argument count Mismatch".to_string())))
+                    return Err(self.trap(TrapReason::VerifierBug(
+                        "Argument count Mismatch".to_string(),
+                    )));
                 }
                 Ok(Value::Boolean(matches!(&*args[0], Value::Result(Ok(_)))))
             }
-            Functions::IsErr  => {
+            Functions::IsErr => {
                 if args.len() != 1 {
-                    return Err(self.trap(TrapReason::VerifierBug("Argument count Mismatch".to_string())))
+                    return Err(self.trap(TrapReason::VerifierBug(
+                        "Argument count Mismatch".to_string(),
+                    )));
                 }
                 Ok(Value::Boolean(matches!(&*args[0], Value::Result(Err(_)))))
             }
@@ -643,12 +756,14 @@ impl VirtualMachine {
             | Functions::UnwrapSomeChar
             | Functions::UnwrapSomeBoolean => {
                 if args.len() != 1 {
-                    return Err(self.trap(TrapReason::VerifierBug("Argument count Mismatch".to_string())))
+                    return Err(self.trap(TrapReason::VerifierBug(
+                        "Argument count Mismatch".to_string(),
+                    )));
                 }
                 match &*args[0] {
                     Value::Option(Some(inner)) => Ok(*inner.clone()),
-                    Value::Option(None)        => Err(self.trap(TrapReason::UnwrapNone)),
-                    _                          => Err(self.trap(TrapReason::VerifierBug("Type Mismatch".to_string()))),
+                    Value::Option(None) => Err(self.trap(TrapReason::UnwrapNone)),
+                    _ => Err(self.trap(TrapReason::VerifierBug("Type Mismatch".to_string()))),
                 }
             }
 
@@ -659,12 +774,14 @@ impl VirtualMachine {
             | Functions::UnwrapOkChar
             | Functions::UnwrapOkBoolean => {
                 if args.len() != 1 {
-                    return Err(self.trap(TrapReason::VerifierBug("Argument count Mismatch".to_string())))
+                    return Err(self.trap(TrapReason::VerifierBug(
+                        "Argument count Mismatch".to_string(),
+                    )));
                 }
                 match &*args[0] {
                     Value::Result(Ok(inner)) => Ok(*inner.clone()),
-                    Value::Result(Err(_))    => Err(self.trap(TrapReason::UnwrapErrOnOk)),
-                    _                        => Err(self.trap(TrapReason::VerifierBug("Type Mismatch".to_string()))),
+                    Value::Result(Err(_)) => Err(self.trap(TrapReason::UnwrapErrOnOk)),
+                    _ => Err(self.trap(TrapReason::VerifierBug("Type Mismatch".to_string()))),
                 }
             }
 
@@ -675,12 +792,14 @@ impl VirtualMachine {
             | Functions::UnwrapErrChar
             | Functions::UnwrapErrBoolean => {
                 if args.len() != 1 {
-                    return Err(self.trap(TrapReason::VerifierBug("Argument count Mismatch".to_string())))
+                    return Err(self.trap(TrapReason::VerifierBug(
+                        "Argument count Mismatch".to_string(),
+                    )));
                 }
                 match &*args[0] {
                     Value::Result(Err(inner)) => Ok(*inner.clone()),
-                    Value::Result(Ok(_))      => Err(self.trap(TrapReason::UnwrapOkOnErr)),
-                    _                         => Err(self.trap(TrapReason::VerifierBug("Type Mismatch".to_string()))),
+                    Value::Result(Ok(_)) => Err(self.trap(TrapReason::UnwrapOkOnErr)),
+                    _ => Err(self.trap(TrapReason::VerifierBug("Type Mismatch".to_string()))),
                 }
             }
         }
@@ -697,17 +816,21 @@ impl VirtualMachine {
             ($v:expr) => {
                 match &*$v {
                     Value::Integer(n) => *n,
-                    _ => return Err(self.trap(TrapReason::VerifierBug("Type Mismatch".to_string())))
+                    _ => {
+                        return Err(self.trap(TrapReason::VerifierBug("Type Mismatch".to_string())))
+                    }
                 }
-            }
+            };
         }
         macro_rules! str_ {
             ($v:expr) => {
                 match &*$v {
-                    Value::String(s)  => s.clone(),
-                    _ => return Err(self.trap(TrapReason::VerifierBug("Type Mismatch".to_string())))
+                    Value::String(s) => s.clone(),
+                    _ => {
+                        return Err(self.trap(TrapReason::VerifierBug("Type Mismatch".to_string())))
+                    }
                 }
-            }
+            };
         }
 
         match special_functions {
@@ -717,32 +840,43 @@ impl VirtualMachine {
             | SpecialFunctions::ReadGlobalMemoryChar
             | SpecialFunctions::ReadGlobalMemoryBoolean => {
                 if arguments.len() != 2 {
-                    return Err(self.trap(TrapReason::VerifierBug("Argument count Mismatch".to_string())))
+                    return Err(self.trap(TrapReason::VerifierBug(
+                        "Argument count Mismatch".to_string(),
+                    )));
                 }
-                let namespace  = str_!(arguments[0]);
+                let namespace = str_!(arguments[0]);
                 let identifier = str_!(arguments[1]);
                 let value = match self.global_memory.try_read() {
-                    Ok(value) => Ok(Box::new(Value::Option(
-                        value.get(&(Namespace { 0: namespace }, Identifier { 0: identifier })).map(|v| Box::new(v.clone()))
-                    ))),
-                    Err(error) => {
-                        match error {
-                            TryLockError::Poisoned(value) => {
-                                self.emit(VirtualMachineEvent::Log(
-                                    VirtualMachineLog { level: VirtualMachineLogLevel::Warn, message: "global memory is poisoned".to_string() }
-                                ));
-                                Ok(Box::new(Value::Option(
-                                    value.get_ref().get(&(Namespace { 0: namespace }, Identifier { 0: identifier })).map(|v| Box::new(v.clone()))
-                                )))
-                            },
-                            TryLockError::WouldBlock => {
-                                self.emit(VirtualMachineEvent::Log(
-                                    VirtualMachineLog { level: VirtualMachineLogLevel::Warn, message: "global memory is blocking".to_string() }
-                                ));
-                                Err(Box::new(Value::String("global memory is blocking".to_string())))
-                            }
+                    Ok(value) => value
+                        .get(&(Namespace { 0: namespace }, Identifier { 0: identifier }))
+                        .map(|v| Box::new(v.clone()))
+                        .ok_or_else(|| Box::new(Value::String("not in value".to_string()))),
+                    Err(error) => match error {
+                        TryLockError::Poisoned(value) => {
+                            self.emit(VirtualMachineEvent::Log(VirtualMachineLog {
+                                level: VirtualMachineLogLevel::Warn,
+                                message: "global memory is poisoned".to_string(),
+                            }));
+                            Ok(Box::new(Value::Option(
+                                value
+                                    .get_ref()
+                                    .get(&(
+                                        Namespace { 0: namespace },
+                                        Identifier { 0: identifier },
+                                    ))
+                                    .map(|v| Box::new(v.clone())),
+                            )))
                         }
-                    }
+                        TryLockError::WouldBlock => {
+                            self.emit(VirtualMachineEvent::Log(VirtualMachineLog {
+                                level: VirtualMachineLogLevel::Warn,
+                                message: "global memory is blocking".to_string(),
+                            }));
+                            Err(Box::new(Value::String(
+                                "global memory is blocking".to_string(),
+                            )))
+                        }
+                    },
                 };
                 Ok(Value::Result(value))
             }
@@ -753,49 +887,56 @@ impl VirtualMachine {
             | SpecialFunctions::WriteGlobalMemoryChar
             | SpecialFunctions::WriteGlobalMemoryBoolean => {
                 if arguments.len() != 3 {
-                    return Err(self.trap(TrapReason::VerifierBug("Argument count Mismatch".to_string())))
+                    return Err(self.trap(TrapReason::VerifierBug(
+                        "Argument count Mismatch".to_string(),
+                    )));
                 }
-                let namespace  = str_!(arguments[0]);
+                let namespace = str_!(arguments[0]);
                 let identifier = str_!(arguments[1]);
                 match self.global_memory.try_write() {
-                    Ok(mut value) => {
-                        value.insert(
-                            (Namespace { 0: namespace }, Identifier { 0: identifier }), arguments[2].deref().clone()).map(|v| Box::new(v.clone())
-                        );
+                    Ok(value) => {
+                        value
+                            .insert(
+                                (Namespace { 0: namespace }, Identifier { 0: identifier }),
+                                arguments[2].deref().clone(),
+                            )
+                            .map(|v| Box::new(v.clone()));
                     }
-                    Err(error) => {
-                        match error {
-                            TryLockError::Poisoned(mut value) => {
-                                self.emit(VirtualMachineEvent::Log(
-                                    VirtualMachineLog { level: VirtualMachineLogLevel::Warn, message: "global memory is poisoned".to_string() }
-                                ));
-                                value.get_mut().insert(
-                                    (Namespace { 0: namespace }, Identifier { 0: identifier }), arguments[2].deref().clone()).map(|v| Box::new(v.clone())
-                                );
-                            },
-                            TryLockError::WouldBlock => {
-                                self.emit(VirtualMachineEvent::Log(
-                                    VirtualMachineLog { level: VirtualMachineLogLevel::Warn, message: "global memory is blocking".to_string() }
-                                ));
-                            }
+                    Err(error) => match error {
+                        TryLockError::Poisoned(mut value) => {
+                            self.emit(VirtualMachineEvent::Log(VirtualMachineLog {
+                                level: VirtualMachineLogLevel::Warn,
+                                message: "global memory is poisoned".to_string(),
+                            }));
+                            value
+                                .get_mut()
+                                .insert(
+                                    (Namespace { 0: namespace }, Identifier { 0: identifier }),
+                                    arguments[2].deref().clone(),
+                                )
+                                .map(|v| Box::new(v.clone()));
                         }
-                    }
+                        TryLockError::WouldBlock => {
+                            self.emit(VirtualMachineEvent::Log(VirtualMachineLog {
+                                level: VirtualMachineLogLevel::Warn,
+                                message: "global memory is blocking".to_string(),
+                            }));
+                        }
+                    },
                 };
-                Ok(Value::Void)
+                Ok(Value::Void) // todo: need result<void, string>
             }
 
             SpecialFunctions::GetInstructionPosition => {
                 Ok(Value::Integer(self.instruction_pointer as i64))
             }
 
-            SpecialFunctions::GetModificationNamespaceList => {
-                Ok(Value::Vector(
-                    self.modification_namespace_list
-                        .iter()
-                        .map(|ns| Value::String(ns.0.clone()))
-                        .collect(),
-                ))
-            }
+            SpecialFunctions::GetModificationNamespaceList => Ok(Value::Vector(
+                self.modification_namespace_list
+                    .iter()
+                    .map(|ns| Value::String(ns.0.clone()))
+                    .collect(),
+            )),
         }
     }
 }
@@ -807,9 +948,9 @@ impl VirtualMachine {
 fn parse_literal(ty: &Type, lit: &Literal) -> Option<Value> {
     match (ty, lit) {
         (Type::Integer, Literal::Integer(n)) => Some(Value::Integer(*n)),
-        (Type::Float,   Literal::Float(f))   => Some(Value::Float(*f)),
-        (Type::String,  Literal::String(s))  => Some(Value::String(s.clone())),
-        (Type::Char,    Literal::Char(c))    => Some(Value::Char(*c)),
+        (Type::Float, Literal::Float(f)) => Some(Value::Float(*f)),
+        (Type::String, Literal::String(s)) => Some(Value::String(s.clone())),
+        (Type::Char, Literal::Char(c)) => Some(Value::Char(*c)),
         (Type::Boolean, Literal::Boolean(b)) => Some(Value::Boolean(*b)),
         _ => None,
     }
@@ -824,7 +965,10 @@ pub struct Logger {
 
 impl Logger {
     pub fn new(rx: Receiver<VirtualMachineEvent>) -> Self {
-        Self { channel_receiver: rx, verbose: false }
+        Self {
+            channel_receiver: rx,
+            verbose: false,
+        }
     }
 
     pub fn with_verbose(mut self, v: bool) -> Self {

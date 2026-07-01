@@ -5,4 +5,5 @@ edition = "2024"
 
 [dependencies]
 crossbeam-channel = "0.5.15"
+dashmap = "6.2.1"
 state-game-core = { path = "../state-game-core" }

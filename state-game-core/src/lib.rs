@@ -73,18 +73,36 @@ pub trait SelectionStrategy {
 // Rule Module Registry
 // =========================
 
-/// ModificationSpecifications defines the game's registry.
-/// It consists of three types of metadata and optional implementation methods.
-/// The metadata fields are as follows:
-/// 1. base_priority: Defines the priority.
-/// 2. use_mix_inside_priority: Specifies whether the priority is shared with other registries.
-/// 3. namespace: Defines the namespace. If duplicated, registry conflicts occur and loading will fail.
+/// ModificationSpecifications defines a registry specification.
+///
+/// A specification provides metadata that determines how it participates
+/// in the registry execution pipeline:
+///
+/// 1. base_priority: Defines phase ordering.
+/// 2. use_mix_inside_priority: Defines ordering behavior among
+///    specifications sharing the same base_priority.
+/// 3. namespace: Defines the registry namespace. Duplicate namespaces
+///    cause registry conflicts and loading will fail.
+///
+/// Execution model:
+/// - Specifications are executed in ascending base_priority order.
+/// - Execution is a sequential State transformation pipeline.
+/// - The State produced by one specification becomes the input State
+///   for the next.
+/// - Results are NOT independently produced and merged later.
+///   Composition IS sequential application.
+/// - The final State of one base_priority phase becomes the input State
+///   for the next phase.
 ///
 /// Notes:
-/// These values are logically constant and must not change across calls.
-/// They are not derived from runtime State and are treated as immutable configuration.
+/// - Ordering among specifications sharing the same base_priority is
+///   further defined by use_mix_inside_priority() and inside_priority().
+/// - These metadata values are logically constant and must not change
+///   across calls.
+/// - They are not derived from runtime State and are treated as
+///   immutable configuration.
 pub trait ModificationSpecifications {
-    /// Base priority of this specification.
+    /// Defines the phase in which this specification executes.
     ///
     /// Execution order by numeric priority:
     /// 1. Lower values run earlier.
@@ -92,52 +110,52 @@ pub trait ModificationSpecifications {
     /// 3. base_priority = 0: default phase
     /// 4. base_priority > 0: post-phase (runs after default)
     ///
-    /// Each base_priority phase is NOT a set of independent results that get merged.
-    /// It is a single sequential fold: the State produced by one specification becomes
-    /// the input State for the next. There is no separate "merge" or "compose" step —
-    /// composition IS sequential application.
-    ///
-    /// Notes (when base_priority is equal):
-    ///
-    /// 1. Execution strategy (within the same base_priority phase):
-    ///    - Specifications with use_mix_inside_priority = true run first, as a single
-    ///      interleaved chain ordered by 'inside_priority'. Specifications from different
-    ///      namespaces may be interleaved within this chain.
-    ///      Note: If 'inside_priority' is identical, relative order between those
-    ///      specifications is NOT guaranteed.
-    ///    - Specifications with use_mix_inside_priority = false run after that, as a
-    ///      second chain. Each such specification receives the State produced by the
-    ///      previous one in this chain (mix chain's final output is the first input).
-    ///      Note: The order between these specifications is NOT guaranteed.
-    ///
-    /// 2. Result production:
-    ///    - Each specification receives the current State (output of the previous
-    ///      specification in the chain, or the phase's initial State if it is first)
-    ///      and returns a new State. A specification is free to read and write any
-    ///      part of the State.
-    ///    - Preserving fields it does not intend to change (rather than reconstructing
-    ///      State from scratch) is RECOMMENDED for compatibility with other
-    ///      specifications, but is NOT enforced. A specification may overwrite or
-    ///      discard changes made by earlier specifications in the chain; this is the
-    ///      specification author's responsibility.
-    ///
-    /// 3. Final result:
-    ///    - The State produced by the last specification in the non-mix chain (or the
-    ///      mix chain, if no non-mix specifications exist at this priority) becomes the
-    ///      input State for the next base_priority phase.
-    ///
-    /// ## Determinism contract
-    /// When relative order is "not guaranteed" (identical inside_priority, or identical
-    /// base_priority within the non-mix chain), specifications occupying that tie are
-    /// REQUIRED to be commutative with each other — i.e. produce the same final State
-    /// regardless of which order they run in. This is NOT verified by the engine.
-    /// Violating this contract results in non-deterministic behavior that may only
-    /// surface when iteration/registration order happens to change.
+    /// Result production:
+    /// - Each specification receives the current State and returns
+    ///   a new State.
+    /// - A specification may read or write any part of the State.
+    /// - Preserving fields it does not intend to change is
+    ///   RECOMMENDED for compatibility, but not enforced.
+    /// - A specification may overwrite or discard changes made by
+    ///   earlier specifications; this is the specification author's
+    ///   responsibility.
     fn base_priority(&self) -> i64;
+
+    /// Defines how this specification participates in ordering among
+    /// specifications that share the same base_priority.
+    ///
+    /// Execution strategy:
+    ///
+    /// 1. use_mix_inside_priority = true
+    ///    - Participates in the mixed chain.
+    ///    - Mixed-chain specifications execute before non-mixed ones.
+    ///    - Ordered by inside_priority().
+    ///    - Specifications from different namespaces may be interleaved.
+    ///    - If inside_priority values are identical, relative order is
+    ///      NOT guaranteed.
+    ///
+    /// 2. use_mix_inside_priority = false
+    ///    - Participates in the non-mixed chain.
+    ///    - Executes after the mixed chain.
+    ///    - Receives the State produced by the previous specification
+    ///      in that chain.
+    ///    - Relative order between non-mixed specifications is NOT
+    ///      guaranteed.
+    ///
+    /// Determinism contract:
+    /// - Whenever relative order is not guaranteed, the involved
+    ///   specifications are REQUIRED to be commutative.
+    /// - They must produce the same final State regardless of
+    ///   execution order.
+    /// - This requirement is not verified by the engine.
+    /// - Violating this contract may result in non-deterministic
+    ///   behavior when registration or iteration order changes.
     fn use_mix_inside_priority(&self) -> bool;
 
-    /// naming rule: snake_case
-    /// If multiple specifications share the same namespace, loading fails.
+    /// Naming rule: snake_case.
+    ///
+    /// If multiple specifications share the same namespace,
+    /// loading fails.
     fn namespace(&self) -> Namespace;
 
     /// optional implementations
@@ -236,11 +254,3 @@ impl dyn GameEngine {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    fn test() {
-
-    }
-}

@@ -1,8 +1,8 @@
-use std::collections::HashMap;
-use std::sync::Arc;
 use crate::virtual_machine::instruction::{FunctionIdentifier, Slot};
 use crate::virtual_machine::instruction_verifier::VerifyError;
 use crate::virtual_machine::types::{Type, Value};
+use std::collections::HashMap;
+use std::sync::Arc;
 
 pub enum VirtualMachineEvent {
     Log(VirtualMachineLog),
@@ -43,9 +43,15 @@ pub enum TrapReason {
     /// Integer division or modulo by zero.
     DivisionByZero,
     /// Vector index out of bounds.
-    IndexOutOfBounds { index: i64, length: usize },
+    IndexOutOfBounds {
+        index: i64,
+        length: usize,
+    },
     /// `StringGetChar` index out of bounds.
-    StringIndexOutOfBounds { index: i64, length: usize },
+    StringIndexOutOfBounds {
+        index: i64,
+        length: usize,
+    },
     VerifierBug(String),
 }
 
@@ -59,12 +65,22 @@ pub struct VirtualMachineCallEvent {
     pub self_identifier: FunctionIdentifier,
     pub function_identifier: FunctionIdentifier,
     pub input: HashMap<Slot, Arc<Value>>,
-    pub output: HashMap<Slot, Arc<Value>>
+    pub output: HashMap<Slot, Arc<Value>>,
 }
 
 impl VirtualMachineCallEvent {
-    pub fn new(self_identifier: FunctionIdentifier, function_identifier: FunctionIdentifier, input: HashMap<Slot, Arc<Value>>, output: HashMap<Slot, Arc<Value>>) -> Self {
-        Self { self_identifier, function_identifier, input, output }
+    pub fn new(
+        self_identifier: FunctionIdentifier,
+        function_identifier: FunctionIdentifier,
+        input: HashMap<Slot, Arc<Value>>,
+        output: HashMap<Slot, Arc<Value>>,
+    ) -> Self {
+        Self {
+            self_identifier,
+            function_identifier,
+            input,
+            output,
+        }
     }
 }
 
@@ -72,7 +88,8 @@ pub enum VirtualMachineYield {
     Call {
         function_identifier: FunctionIdentifier,
         inputs: HashMap<Slot, Arc<Value>>,
-        outputs: Vec<Slot>,
+        destination_slots: Vec<Slot>,
+        source_slots: Vec<Slot>,
     },
 
     Finished,

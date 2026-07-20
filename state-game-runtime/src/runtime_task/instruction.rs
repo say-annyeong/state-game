@@ -1,8 +1,9 @@
 use crate::define_function_registry;
-use crate::virtual_machine::types::Type;
+use crate::runtime_task::types::Type;
 
 pub type Slot = u64;
 pub type FunctionIdentifier = u64;
+pub type RuntimeTaskIdentifier = u64;
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Instruction {
@@ -34,11 +35,6 @@ pub enum Instruction {
         /// The output must undergo the same type checking as Bind.
         /// Execution will fail if there is a type mismatch.
         destination_slots: Vec<Slot>,
-        /// source
-        ///
-        /// WARNING: This slot does not belong to the currently running virtual machine.
-        /// It refers to a slot within the domain of a different running virtual machine.
-        source_slots: Vec<Slot>,
     },
 
     Jump {
@@ -50,6 +46,11 @@ pub enum Instruction {
         true_target_position: usize,
         false_target_position: usize,
     },
+
+    ReturnDefinedCall {
+        function_identifier: FunctionIdentifier,
+        outputs: Vec<Slot>,
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]

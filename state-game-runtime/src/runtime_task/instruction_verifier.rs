@@ -1,5 +1,5 @@
-use crate::virtual_machine::instruction::{DefinedFunctionSignature, FunctionIdentifier, FunctionRegistry, FunctionSignature, Functions, Instruction, Literal, Slot, SpecialFunctions, FUNCTION_REGISTRY, SPECIAL_FUNCTIONS_REGISTRY};
-use crate::virtual_machine::types::Type;
+use crate::runtime_task::instruction::{DefinedFunctionSignature, FunctionIdentifier, FunctionRegistry, FunctionSignature, Functions, Instruction, Literal, Slot, SpecialFunctions, FUNCTION_REGISTRY, SPECIAL_FUNCTIONS_REGISTRY};
+use crate::runtime_task::types::Type;
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -236,7 +236,6 @@ impl InstructionVerifier {
                     function_identifier,
                     inputs,
                     destination_slots,
-                    source_slots,
                 } => {
                     match self.defined_functions.get(function_identifier) {
                         None => {
@@ -255,38 +254,6 @@ impl InstructionVerifier {
                                 });
                             } else {
                                 for (slot, expected_type) in inputs.iter().zip(sig.inputs.iter()) {
-                                    match slots.get(slot) {
-                                        None => errors.push(VerifyError::UnboundSlot {
-                                            instruction_pointer,
-                                            slot: *slot,
-                                        }),
-                                        Some(found_type)
-                                            if !type_compatible(found_type, expected_type) =>
-                                        {
-                                            errors.push(VerifyError::TypeMismatch {
-                                                instruction_pointer,
-                                                slot: *slot,
-                                                expected: expected_type.clone(),
-                                                found: found_type.clone(),
-                                            });
-                                        }
-                                        _ => {}
-                                    }
-                                }
-                            }
-
-                            // ── source_slots: output slots inside the callee ──
-                            // Must be bound and type-match the declared output types.
-                            if source_slots.len() != sig.destinations.len() {
-                                errors.push(VerifyError::DefinedFunctionReturnCountMismatch {
-                                    instruction_pointer,
-                                    expected: sig.destinations.len(),
-                                    found: source_slots.len(),
-                                });
-                            } else {
-                                for (slot, expected_type) in
-                                    source_slots.iter().zip(sig.destinations.iter())
-                                {
                                     match slots.get(slot) {
                                         None => errors.push(VerifyError::UnboundSlot {
                                             instruction_pointer,
@@ -330,6 +297,9 @@ impl InstructionVerifier {
                             }
                         }
                     }
+                }
+                Instruction::ReturnDefinedCall { function_identifier, outputs } => {
+
                 }
             }
         }

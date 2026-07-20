@@ -1,32 +1,40 @@
-use crate::virtual_machine::instruction::{FunctionIdentifier, Slot};
-use crate::virtual_machine::instruction_verifier::VerifyError;
-use crate::virtual_machine::types::{Type, Value};
+use crate::runtime_task::instruction::{FunctionIdentifier, Slot, RuntimeTaskIdentifier};
+use crate::runtime_task::instruction_verifier::VerifyError;
+use crate::runtime_task::types::{Type, Value};
 use std::collections::HashMap;
 use std::sync::Arc;
 
-pub enum VirtualMachineEvent {
-    Log(VirtualMachineLog),
-    Trap(VirtualMachineTrap),
+
+pub struct RuntimeTaskEvent {
+    pub virtual_machine_identifier: RuntimeTaskIdentifier,
+    pub virtual_machine_event_kind: RuntimeTaskEventKind
+}
+
+pub enum RuntimeTaskEventKind {
+    Log(RuntimeTaskLog),
+    Trap(RuntimeTaskTrap),
     StateChange(StateChange),
     ExecutionFinished,
 }
 
-pub struct VirtualMachineLog {
-    pub level: VirtualMachineLogLevel,
+pub struct RuntimeTaskLog {
+    pub level: RuntimeTaskLogLevel,
     pub message: String,
 }
 
 #[derive(Debug)]
-pub enum VirtualMachineLogLevel {
+pub enum RuntimeTaskLogLevel {
     Trace,
     Debug,
     Info,
     Warn,
     Error,
+    State,
+    Dev,
 }
 
 #[derive(Clone, Debug)]
-pub struct VirtualMachineTrap {
+pub struct RuntimeTaskTrap {
     pub trapped_position: usize,
     pub reason: TrapReason,
 }
@@ -61,14 +69,14 @@ pub struct StateChange {
     pub new: Option<Arc<Value>>,
 }
 
-pub struct VirtualMachineCallEvent {
+pub struct RuntimeTaskCallEvent {
     pub self_identifier: FunctionIdentifier,
     pub function_identifier: FunctionIdentifier,
     pub input: HashMap<Slot, Arc<Value>>,
     pub output: HashMap<Slot, Arc<Value>>,
 }
 
-impl VirtualMachineCallEvent {
+impl RuntimeTaskCallEvent {
     pub fn new(
         self_identifier: FunctionIdentifier,
         function_identifier: FunctionIdentifier,
@@ -84,13 +92,17 @@ impl VirtualMachineCallEvent {
     }
 }
 
-pub enum VirtualMachineYield {
+pub enum RuntimeTaskYield {
     Call {
         function_identifier: FunctionIdentifier,
         inputs: HashMap<Slot, Arc<Value>>,
         destination_slots: Vec<Slot>,
-        source_slots: Vec<Slot>,
     },
 
     Finished,
+    
+    Return {
+        function_identifier: FunctionIdentifier,
+        outputs: Vec<Arc<Value>>,
+    }
 }

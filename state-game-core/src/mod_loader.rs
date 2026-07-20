@@ -1,56 +1,65 @@
+use std::ops::Bound;
 use crate::Namespace;
 
-pub type Version = [u64; 8];
+#[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct Version([u64; 8]);
 
 pub struct ModificationMetadata {
     pub namespace: Namespace,
     pub version: Version,
-    pub application_programming_interface_version: Version,
-    pub content_hash: u64,
-    pub dependency: Vec<Dependency>,
+    pub api_version: Version,
+    pub content_hash: Hash,
+
+    pub dependencies: Vec<Dependency>,
+    pub interactions: Vec<Interaction>,
 }
 
-pub enum DependencyKind {
-    /// A required dependency.
-    /// The system cannot function correctly without this dependency.
-    /// Absence typically prevents loading or disables core functionality.
-    Hard,
 
-    /// An optional dependency.
-    /// The system works without it, but may enable additional features if present.
-    /// Safe to ignore if unavailable.
-    Soft,
+pub struct Interaction {
+    pub namespace: Namespace,
+    pub kind: InteractionKind,
+}
 
-    /// A dependency that is not required but is preferred.
-    /// Its presence improves performance, usability, or feature completeness.
-    /// The system may prioritize configurations including this dependency.
-    Recommended,
 
-    /// A partially conflicting dependency.
-    /// The system can run with both present, but behavior may be degraded,
-    /// unstable, or partially incompatible.
-    /// Usage together is allowed but discouraged; warnings may be issued.
+pub enum InteractionKind {
+    /// This mod and the target mod modify overlapping functionality.
+    /// They may work together depending on load order or patches.
     Conflict,
 
-    /// A strictly incompatible dependency.
-    /// The system must not allow this dependency combination.
-    /// Presence of both typically prevents loading or triggers a hard error.
+    /// This mod cannot function together with the target mod.
     Incompatible,
 }
 
-
 pub struct Dependency {
-    pub kind: DependencyKind,
     pub namespace: Namespace,
     pub version: VersionRequirement,
+    pub kind: DependencyKind,
+}
+
+pub enum DependencyKind {
+    /// Mod cannot work without this.
+    Required,
+
+    /// Mod works without this but enables extra features.
+    Optional,
 }
 
 pub enum VersionRequirement {
     Any,
+
     Exact(Version),
-    Minimum(Version),
+
+    AtLeast(Version),
+
+    Compatible(Version),
+
     Range {
-        min: Version,
-        max: Version,
+        min: Bound<Version>,
+        max: Bound<Version>,
     },
+}
+
+pub enum Hash {
+    Sha256([u8;32]),
+    Blake3([u8;32]),
 }

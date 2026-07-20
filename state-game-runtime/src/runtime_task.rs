@@ -2,16 +2,16 @@ mod event;
 pub mod instruction;
 mod instruction_verifier;
 pub mod types;
-mod virtual_machine;
+mod runtime_task;
 mod macros;
 
 #[cfg(test)]
 mod test {
-    use crate::virtual_machine::{
+    use crate::runtime_task::{
         instruction::{Functions, Instruction, Literal},
         instruction_verifier::InstructionVerifier,
         types::{Type, Value},
-        virtual_machine::{Logger, VirtualMachine},
+        runtime_task::{Logger, RuntimeTask},
     };
     use std::collections::HashMap;
     use std::{ops::Deref, sync::Arc, thread};
@@ -21,7 +21,7 @@ mod test {
 
     fn make_virtual_machine_and_logger(
         instructions: Arc<[Instruction]>,
-    ) -> (VirtualMachine, Logger) {
+    ) -> (RuntimeTask, Logger) {
         let instruction_verifier =
             InstructionVerifier::new(instructions.clone(), Arc::new(HashMap::new()))
                 .verify()
@@ -31,13 +31,13 @@ mod test {
         assert!(instruction_verifier);
         // Warning: Do not use it like this.
         (
-            VirtualMachine::new(
+            RuntimeTask::new(
                 logger_sender,
                 sender,
                 receiver,
                 0,
                 instructions.clone(),
-                Arc::new(RwLock::new(DashMap::new())),
+                Arc::new(DashMap::new()),
                 Arc::new([Namespace { 0: "noting".to_string() }])
             ),
             Logger::new(logger_receiver),
@@ -150,29 +150,7 @@ mod test {
                 type_name: Type::Integer,
             },
         ]);
-        let (mut virtual_machine, logger) = make_virtual_machine_and_logger(instructions);
-        let (thread1, thread2) = (
-            thread::spawn(move || {
-                let _ = virtual_machine.run_until_yield();
-                let mut slots = Vec::new();
-                for (k, v) in virtual_machine.slots {
-                    slots.push((k, v));
-                }
-                slots.sort_by(|a, b| a.0.cmp(&b.0));
-                let mut result = String::new();
-                for (_, value) in slots {
-                    if let Value::Integer(i) = value.deref().clone() {
-                        result.push(i as u8 as char);
-                    }
-                }
-                println!("{}", result);
-            }),
-            thread::spawn(move || {
-                let _ = logger.run();
-            }),
-        );
-        let _ = thread1.join();
-        let _ = thread2.join();
+        let (virtual_machine, logger) = make_virtual_machine_and_logger(instructions);
     }
 
     #[test]

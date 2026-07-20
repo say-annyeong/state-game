@@ -1,22 +1,24 @@
 use std::{
     collections::HashMap,
     ops::Deref,
-    sync::{Arc, RwLock, TryLockError},
+    sync::{Arc},
 };
 
 use crossbeam_channel::{Receiver, Sender};
-use dashmap::DashMap;
-
+use dashmap::{DashMap, Entry};
+use dashmap::try_result::TryResult;
 use state_game_core::{Identifier, Namespace, helper::try_until};
 
-use crate::virtual_machine::{
+use crate::runtime_task::{
     event::{
-        StateChange, TrapReason, VirtualMachineCallEvent, VirtualMachineEvent, VirtualMachineLog,
-        VirtualMachineLogLevel, VirtualMachineTrap, VirtualMachineYield
+        StateChange, TrapReason, RuntimeTaskCallEvent, RuntimeTaskEvent, RuntimeTaskLog,
+        RuntimeTaskLogLevel, RuntimeTaskTrap, RuntimeTaskYield
     },
     instruction::{FunctionIdentifier, Functions, Instruction, Literal, Slot, SpecialFunctions},
     types::{Type, Value},
 };
+use crate::runtime_task::event::RuntimeTaskEventKind;
+use crate::runtime_task::instruction::RuntimeTaskIdentifier;
 // ── Instruction pointer step ─────────────────────────────────────────────────
 
 enum ExecutionResult {
@@ -29,45 +31,53 @@ enum ExecutionResult {
         function_identifier: FunctionIdentifier,
         inputs: HashMap<Slot, Arc<Value>>,
         destination_slots: Vec<Slot>,
-        source_slots: Vec<Slot>,
     },
+
+    ReturnDefinedCall {
+        function_identifier: FunctionIdentifier,
+        outputs: Vec<Arc<Value>>,
+    }
 }
 
 // ── Virtual Machine ──────────────────────────────────────────────────────────
 
-/// A VirtualMachine is designed to support multiple concurrent instances.
-/// Each instance operates independently with its own Instruction set.
+/// A RuntimeTask represents a single execution context.
 ///
-/// Execution always creates and runs a new VirtualMachine instance.
-/// Instances are allowed to execute in parallel unless an explicit
-/// dependency relationship is declared.
+/// Every instance shares the same execution engine, but owns its own
+/// instruction stream, register state, and execution position.
 ///
-/// Dependency management is the responsibility of the caller.
-/// Any race conditions, ordering issues, or other bugs resulting from
-/// undeclared dependencies are considered developer errors and are not
-/// attributed to the VirtualMachine implementation.
-pub struct VirtualMachine {
-    pub logger_sender: Sender<VirtualMachineEvent>,
-    pub scheduler_sender: Sender<VirtualMachineCallEvent>,
-    pub scheduler_receiver: Receiver<VirtualMachineCallEvent>,
-    pub self_identifier: FunctionIdentifier,
+/// Multiple RuntimeTask instances may execute concurrently.
+/// When a user-defined function is invoked, the instance yields execution
+/// to the scheduler, which is responsible for creating, scheduling,
+/// and resuming other RuntimeTask instances.
+///
+/// Dependency management is intentionally outside the RuntimeTask.
+/// Any required ordering, synchronization, or conflict resolution must
+/// be enforced by the scheduler or caller. Race conditions or incorrect
+/// execution order caused by missing dependencies are considered caller
+/// errors rather than RuntimeTask implementation errors.
+pub struct RuntimeTask {
+    pub logger_sender: Sender<RuntimeTaskEvent>,
+    pub scheduler_sender: Sender<RuntimeTaskCallEvent>,
+    pub scheduler_receiver: Receiver<RuntimeTaskCallEvent>,
+    pub virtual_machine_identifier: RuntimeTaskIdentifier,
     pub instruction_pointer: usize,
     pub instructions: Arc<[Instruction]>,
-    pub slots: HashMap<Slot, Arc<Value>>,
-    pub global_memory: Arc<RwLock<DashMap<(Namespace, Identifier), Value>>>,
+    pub input_slots: Vec<(Slot, Arc<Value>)>,
+    pub output_slots: Vec<(Slot, Arc<Value>)>,
+    pub slots: Vec<Arc<Value>>,
+    pub global_memory: Arc<DashMap<(Namespace, Identifier), Value>>,
     pub modification_namespace_list: Arc<[Namespace]>,
-    pub input_slots: HashMap<Slot, Arc<Value>>,
-    pub output_slots: HashMap<Slot, Arc<Value>>,
 }
 
-impl VirtualMachine {
+impl RuntimeTask {
     pub fn new(
-        logger_sender: Sender<VirtualMachineEvent>,
-        scheduler_sender: Sender<VirtualMachineCallEvent>,
-        scheduler_receiver: Receiver<VirtualMachineCallEvent>,
-        self_identifier: FunctionIdentifier,
+        logger_sender: Sender<RuntimeTaskEvent>,
+        scheduler_sender: Sender<RuntimeTaskCallEvent>,
+        scheduler_receiver: Receiver<RuntimeTaskCallEvent>,
+        self_identifier: RuntimeTaskIdentifier,
         instructions: Arc<[Instruction]>,
-        global_memory: Arc<RwLock<DashMap<(Namespace, Identifier), Value>>>,
+        global_memory: Arc<DashMap<(Namespace, Identifier), Value>>,
         modification_namespace_list: Arc<[Namespace]>,
     ) -> Self {
         Self::with_instruction_pointer(
@@ -83,69 +93,85 @@ impl VirtualMachine {
     }
 
     pub fn with_instruction_pointer(
-        logger_sender: Sender<VirtualMachineEvent>,
-        scheduler_sender: Sender<VirtualMachineCallEvent>,
-        scheduler_receiver: Receiver<VirtualMachineCallEvent>,
-        self_identifier: FunctionIdentifier,
+        logger_sender: Sender<RuntimeTaskEvent>,
+        scheduler_sender: Sender<RuntimeTaskCallEvent>,
+        scheduler_receiver: Receiver<RuntimeTaskCallEvent>,
+        virtual_machine_identifier: RuntimeTaskIdentifier,
         instructions: Arc<[Instruction]>,
         instruction_pointer: usize,
-        global_memory: Arc<RwLock<DashMap<(Namespace, Identifier), Value>>>,
+        global_memory: Arc<DashMap<(Namespace, Identifier), Value>>,
         modification_namespace_list: Arc<[Namespace]>,
     ) -> Self {
         Self {
             logger_sender,
             scheduler_sender,
             scheduler_receiver,
-            self_identifier,
+            virtual_machine_identifier,
             instruction_pointer,
             instructions,
-            slots: HashMap::new(),
+            slots: Vec::new(),
             global_memory,
             modification_namespace_list,
-            input_slots: HashMap::new(),
-            output_slots: HashMap::new(),
+            input_slots: Vec::new(),
+            output_slots: Vec::new(),
         }
     }
 
     pub fn call_function(
         &self,
-        scheduler_sender: Sender<VirtualMachineCallEvent>,
-        scheduler_receiver: Receiver<VirtualMachineCallEvent>,
-        self_identifier: FunctionIdentifier,
+        scheduler_sender: Sender<RuntimeTaskCallEvent>,
+        scheduler_receiver: Receiver<RuntimeTaskCallEvent>,
+        virtual_machine_identifier: RuntimeTaskIdentifier,
         instruction_pointer: usize,
         instructions: Arc<[Instruction]>,
-        input_slots: HashMap<Slot, Arc<Value>>,
+        input_slots: Vec<(Slot, Arc<Value>)>,
     ) -> Self {
         Self {
             logger_sender: self.logger_sender.clone(),
             scheduler_sender,
             scheduler_receiver,
-            self_identifier,
+            virtual_machine_identifier,
             instruction_pointer,
             instructions,
-            slots: HashMap::new(),
+            slots: Vec::new(),
             global_memory: self.global_memory.clone(),
             modification_namespace_list: self.modification_namespace_list.clone(),
             input_slots,
-            output_slots: HashMap::new(),
+            output_slots: Vec::new(),
         }
     }
 
     // ── Helpers ──────────────────────────────────────────────────────────────
 
-    fn emit(&self, event: VirtualMachineEvent) {
+    fn emit(&self, event: RuntimeTaskEvent) {
         _ = self.logger_sender.send(event);
     }
 
-    fn log(&self, level: VirtualMachineLogLevel, message: impl Into<String>) {
-        self.emit(VirtualMachineEvent::Log(VirtualMachineLog {
-            level,
-            message: message.into(),
-        }));
+    fn event_emit(&self, virtual_machine_event_kind: RuntimeTaskEventKind) {
+        self.emit(
+            RuntimeTaskEvent {
+                virtual_machine_identifier: self.virtual_machine_identifier,
+                virtual_machine_event_kind
+            }
+        )
     }
 
-    fn trap(&self, reason: TrapReason) -> VirtualMachineTrap {
-        VirtualMachineTrap {
+    fn log(&self, level: RuntimeTaskLogLevel, message: impl Into<String>) {
+        self.emit(
+            RuntimeTaskEvent {
+                virtual_machine_identifier: self.virtual_machine_identifier,
+                virtual_machine_event_kind: RuntimeTaskEventKind::Log(
+                    RuntimeTaskLog {
+                        level,
+                        message: message.into(),
+                    }
+                )
+            }
+        );
+    }
+
+    fn trap(&self, reason: TrapReason) -> RuntimeTaskTrap {
+        RuntimeTaskTrap {
             trapped_position: self.instruction_pointer,
             reason,
         }
@@ -157,26 +183,31 @@ impl VirtualMachine {
 
     /// Read a slot. Returns `Err(VerifierBug)` if the slot was never written —
     /// this indicates the instruction stream was not verified before execution.
-    fn read(&self, slot: Slot) -> Result<Arc<Value>, VirtualMachineTrap> {
+    fn read(&self, slot: Slot) -> Result<Arc<Value>, RuntimeTaskTrap> {
         self.slots
-            .get(&slot)
+            .get(slot as usize)
             .cloned()
             .ok_or_else(|| self.trap(TrapReason::VerifierBug("Unbound Slot".to_string())))
     }
 
     fn write(&mut self, slot: Slot, value: Arc<Value>) {
-        let old = self.slots.insert(slot, value.clone());
-        self.emit(VirtualMachineEvent::StateChange(StateChange {
-            identifier: Self::slot_name(slot),
-            old,
-            new: Some(value),
-        }));
+        let old = self.slots.get(slot as usize).cloned();
+        self.slots.insert(slot as usize, value.clone());
+        self.event_emit(
+            RuntimeTaskEventKind::StateChange(
+                StateChange {
+                    identifier: Self::slot_name(slot),
+                    old,
+                    new: Some(value),
+                }
+            )
+        );
     }
 
     // ── Main loop ─────────────────────────────────────────────────────────────
 
-    pub fn run_until_yield(&mut self) -> Result<VirtualMachineYield, VirtualMachineTrap> {
-        self.log(VirtualMachineLogLevel::Info, "Virtual Machine Resume");
+    pub fn run_until_yield(&mut self) -> Result<RuntimeTaskYield, RuntimeTaskTrap> {
+        self.log(RuntimeTaskLogLevel::Info, "Virtual Machine Resume");
 
         while self.instruction_pointer < self.instructions.len() {
             let instr = self.instructions[self.instruction_pointer].clone();
@@ -194,39 +225,44 @@ impl VirtualMachine {
                     function_identifier,
                     inputs,
                     destination_slots,
-                    source_slots,
                 }) => {
-                    return Ok(VirtualMachineYield::Call {
+                    return Ok(RuntimeTaskYield::Call {
                         function_identifier,
                         inputs,
                         destination_slots,
-                        source_slots,
                     });
                 }
 
-                Err(trap) => {
-                    self.emit(VirtualMachineEvent::Trap(trap.clone()));
+                Ok(ExecutionResult::ReturnDefinedCall { function_identifier, outputs }) => {
+                    return Ok(RuntimeTaskYield::Return {
+                        function_identifier,
+                        outputs,
+                    })
+                }
 
-                    self.emit(VirtualMachineEvent::ExecutionFinished);
+                Err(trap) => {
+                    self.event_emit(RuntimeTaskEventKind::Trap(trap.clone()));
+
+                    self.event_emit(RuntimeTaskEventKind::ExecutionFinished);
 
                     return Err(trap);
                 }
             }
         }
 
-        self.log(VirtualMachineLogLevel::Info, "Virtual Machine Halt");
+        self.log(RuntimeTaskLogLevel::Info, "Virtual Machine Halt");
 
-        self.emit(VirtualMachineEvent::ExecutionFinished);
+        self.event_emit(RuntimeTaskEventKind::ExecutionFinished);
 
-        Ok(VirtualMachineYield::Finished)
+        Ok(RuntimeTaskYield::Finished)
     }
 
     pub fn resume_call(
         &mut self,
         values: HashMap<Slot, Arc<Value>>,
-    ) -> Result<(), VirtualMachineTrap> {
+    ) -> Result<(), RuntimeTaskTrap> {
         for (slot, value) in values {
-            self.slots.insert(slot, value);
+            self.slots.insert(slot as usize, value);
         }
 
         self.instruction_pointer += 1;
@@ -236,7 +272,7 @@ impl VirtualMachine {
 
     // ── Instruction dispatch ──────────────────────────────────────────────────
 
-    fn execute(&mut self, instr: &Instruction) -> Result<ExecutionResult, VirtualMachineTrap> {
+    fn execute(&mut self, instr: &Instruction) -> Result<ExecutionResult, RuntimeTaskTrap> {
         match instr {
             // ── Bind ──────────────────────────────────────────────────────────
             Instruction::Bind {
@@ -269,7 +305,7 @@ impl VirtualMachine {
             // ── Jump ──────────────────────────────────────────────────────────
             Instruction::Jump { target_position } => {
                 self.log(
-                    VirtualMachineLogLevel::Debug,
+                    RuntimeTaskLogLevel::Debug,
                     format!("Jump to {}", target_position),
                 );
                 Ok(ExecutionResult::Goto(*target_position))
@@ -289,7 +325,7 @@ impl VirtualMachine {
                     }
                 };
                 self.log(
-                    VirtualMachineLogLevel::Debug,
+                    RuntimeTaskLogLevel::Debug,
                     format!(
                         "Jump positions. true: {}, false: {}",
                         true_target_position, false_target_position
@@ -297,13 +333,13 @@ impl VirtualMachine {
                 );
                 Ok(ExecutionResult::Goto(if b {
                     self.log(
-                        VirtualMachineLogLevel::Debug,
+                        RuntimeTaskLogLevel::Debug,
                         format!("Jump to {}", true_target_position),
                     );
                     *true_target_position
                 } else {
                     self.log(
-                        VirtualMachineLogLevel::Debug,
+                        RuntimeTaskLogLevel::Debug,
                         format!("Jump to {}", false_target_position),
                     );
                     *false_target_position
@@ -329,7 +365,6 @@ impl VirtualMachine {
                 function_identifier,
                 inputs,
                 destination_slots,
-                source_slots,
             } => {
                 let resolved_inputs = {
                     let mut result = HashMap::new();
@@ -347,7 +382,16 @@ impl VirtualMachine {
                     function_identifier: *function_identifier,
                     inputs: resolved_inputs,
                     destination_slots: destination_slots.clone(),
-                    source_slots: source_slots.clone(),
+                })
+            }
+            Instruction::ReturnDefinedCall { function_identifier, outputs } => {
+                let outputs = match outputs.iter().map(|slot| self.read(*slot)).collect() {
+                    Ok(outputs) => outputs,
+                    Err(error) => return Err(error),
+                };
+                Ok(ExecutionResult::ReturnDefinedCall {
+                    function_identifier: *function_identifier,
+                    outputs
                 })
             }
         }
@@ -355,7 +399,7 @@ impl VirtualMachine {
 
     // ── Function dispatch ─────────────────────────────────────────────────────
 
-    fn dispatch(&self, func: Functions, args: &[Arc<Value>]) -> Result<Value, VirtualMachineTrap> {
+    fn dispatch(&self, func: Functions, args: &[Arc<Value>]) -> Result<Value, RuntimeTaskTrap> {
         // Convenience extractors — return VerifierBug trap on wrong variant.
         macro_rules! int {
             ($v:expr) => {
@@ -811,7 +855,7 @@ impl VirtualMachine {
         &mut self,
         special_functions: SpecialFunctions,
         arguments: &[Arc<Value>],
-    ) -> Result<Value, VirtualMachineTrap> {
+    ) -> Result<Value, RuntimeTaskTrap> {
         macro_rules! int {
             ($v:expr) => {
                 match &*$v {
@@ -846,39 +890,21 @@ impl VirtualMachine {
                 }
                 let namespace = str_!(arguments[0]);
                 let identifier = str_!(arguments[1]);
-                let value = match self.global_memory.try_read() {
-                    Ok(value) => value
-                        .get(&(Namespace { 0: namespace }, Identifier { 0: identifier }))
-                        .map(|v| Box::new(v.clone()))
-                        .ok_or_else(|| Box::new(Value::String("not in value".to_string()))),
-                    Err(error) => match error {
-                        TryLockError::Poisoned(value) => {
-                            self.emit(VirtualMachineEvent::Log(VirtualMachineLog {
-                                level: VirtualMachineLogLevel::Warn,
-                                message: "global memory is poisoned".to_string(),
-                            }));
-                            Ok(Box::new(Value::Option(
-                                value
-                                    .get_ref()
-                                    .get(&(
-                                        Namespace { 0: namespace },
-                                        Identifier { 0: identifier },
-                                    ))
-                                    .map(|v| Box::new(v.clone())),
-                            )))
-                        }
-                        TryLockError::WouldBlock => {
-                            self.emit(VirtualMachineEvent::Log(VirtualMachineLog {
-                                level: VirtualMachineLogLevel::Warn,
-                                message: "global memory is blocking".to_string(),
-                            }));
-                            Err(Box::new(Value::String(
-                                "global memory is blocking".to_string(),
-                            )))
-                        }
-                    },
+                let key = (Namespace { 0: namespace }, Identifier { 0: identifier });
+                let value = match self.global_memory.try_get(&key) {
+                    TryResult::Present(value) => {
+                        Value::Result(Ok(Box::new(value.value().clone())))
+                    }
+                    TryResult::Absent => {
+                        self.log(RuntimeTaskLogLevel::Debug, "read to global memory empty space".to_string());
+                        Value::Result(Err(Box::new(Value::String("absent".to_string()))))
+                    }
+                    TryResult::Locked => {
+                        self.log(RuntimeTaskLogLevel::Warn, "global memory is blocking is try read".to_string());
+                        Value::Result(Err(Box::new(Value::String("global memory is blocking".to_string()))))
+                    }
                 };
-                Ok(Value::Result(value))
+                Ok(value)
             }
 
             SpecialFunctions::WriteGlobalMemoryInteger
@@ -893,38 +919,23 @@ impl VirtualMachine {
                 }
                 let namespace = str_!(arguments[0]);
                 let identifier = str_!(arguments[1]);
-                match self.global_memory.try_write() {
-                    Ok(value) => {
-                        value
-                            .insert(
-                                (Namespace { 0: namespace }, Identifier { 0: identifier }),
-                                arguments[2].deref().clone(),
-                            )
-                            .map(|v| Box::new(v.clone()));
+                let input = arguments[2].clone();
+                let key = (Namespace { 0: namespace }, Identifier { 0: identifier });
+                let value = match self.global_memory.try_entry(key) {
+                    Some(Entry::Occupied(mut entry)) => {
+                        entry.insert(input.deref().clone());
+                        Value::Result(Ok(Box::new(Value::Void)))
                     }
-                    Err(error) => match error {
-                        TryLockError::Poisoned(mut value) => {
-                            self.emit(VirtualMachineEvent::Log(VirtualMachineLog {
-                                level: VirtualMachineLogLevel::Warn,
-                                message: "global memory is poisoned".to_string(),
-                            }));
-                            value
-                                .get_mut()
-                                .insert(
-                                    (Namespace { 0: namespace }, Identifier { 0: identifier }),
-                                    arguments[2].deref().clone(),
-                                )
-                                .map(|v| Box::new(v.clone()));
-                        }
-                        TryLockError::WouldBlock => {
-                            self.emit(VirtualMachineEvent::Log(VirtualMachineLog {
-                                level: VirtualMachineLogLevel::Warn,
-                                message: "global memory is blocking".to_string(),
-                            }));
-                        }
-                    },
+                    Some(Entry::Vacant(entry)) => {
+                        entry.insert(input.deref().clone());
+                        Value::Result(Ok(Box::new(Value::Void)))
+                    }
+                    None => {
+                        self.log(RuntimeTaskLogLevel::Warn, "global memory is blocking is try write".to_string());
+                        Value::Result(Err(Box::new(Value::String("global memory is blocking".to_string()))))
+                    }
                 };
-                Ok(Value::Void) // todo: need result<void, string>
+                Ok(value)
             }
 
             SpecialFunctions::GetInstructionPosition => {
@@ -959,12 +970,12 @@ fn parse_literal(ty: &Type, lit: &Literal) -> Option<Value> {
 // ── Logger ────────────────────────────────────────────────────────────────────
 
 pub struct Logger {
-    channel_receiver: Receiver<VirtualMachineEvent>,
+    channel_receiver: Receiver<RuntimeTaskEvent>,
     verbose: bool,
 }
 
 impl Logger {
-    pub fn new(rx: Receiver<VirtualMachineEvent>) -> Self {
+    pub fn new(rx: Receiver<RuntimeTaskEvent>) -> Self {
         Self {
             channel_receiver: rx,
             verbose: false,
@@ -978,24 +989,24 @@ impl Logger {
 
     pub fn run(&self) {
         while let Ok(event) = self.channel_receiver.recv() {
-            match event {
-                VirtualMachineEvent::Log(l) => {
+            match event.virtual_machine_event_kind {
+                RuntimeTaskEventKind::Log(l) => {
                     let line = format!("[{:?}] {}", l.level, l.message);
                     match l.level {
-                        VirtualMachineLogLevel::Warn | VirtualMachineLogLevel::Error => {
+                        RuntimeTaskLogLevel::Warn | RuntimeTaskLogLevel::Error => {
                             eprintln!("{line}")
                         }
                         _ => println!("{line}"),
                     }
                 }
-                VirtualMachineEvent::Trap(t) => {
+                RuntimeTaskEventKind::Trap(t) => {
                     eprintln!("[TRAP @ {}] {:?}", t.trapped_position, t.reason);
                 }
-                VirtualMachineEvent::StateChange(s) if self.verbose => {
+                RuntimeTaskEventKind::StateChange(s) if self.verbose => {
                     println!("[STATE] {}: {:?} -> {:?}", s.identifier, s.old, s.new);
                 }
-                VirtualMachineEvent::StateChange(_) => {}
-                VirtualMachineEvent::ExecutionFinished => {
+                RuntimeTaskEventKind::StateChange(_) => {}
+                RuntimeTaskEventKind::ExecutionFinished => {
                     println!("[VM] finished");
                     break;
                 }

@@ -1,6 +1,24 @@
 use std::ops::Bound;
 use crate::Namespace;
 
+/// A fixed-size version number.
+///
+/// A version consists of up to eight numeric components ordered from
+/// most significant to least significant.
+///
+/// Shorter versions are represented by filling the remaining components
+/// with `0`.
+///
+/// # Examples
+///
+/// ```text
+/// 1           -> [1, 0, 0, 0, 0, 0, 0, 0]
+/// 1.2         -> [1, 2, 0, 0, 0, 0, 0, 0]
+/// 1.2.3       -> [1, 2, 3, 0, 0, 0, 0, 0]
+/// 2025.7.1    -> [2025, 7, 1, 0, 0, 0, 0, 0]
+/// ```
+///
+/// Versions are compared lexicographically from left to right.
 #[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Version([u64; 8]);
 

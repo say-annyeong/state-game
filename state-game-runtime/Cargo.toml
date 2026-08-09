@@ -7,3 +7,10 @@ edition = "2024"
 crossbeam-channel = "0.5.15"
 dashmap = "6.2.1"
 state-game-core = { path = "../state-game-core" }
+
+[dev-dependencies]
+criterion = "0.8.2"
+
+[[bench]]
+name = "persistent_vector_bench"
+harness = false

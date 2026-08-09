@@ -9,7 +9,7 @@ pub fn try_until<T, E, F: FnMut() -> Result<T, E>>(mut to_try: F) -> Result<T, E
                 }
             }
         }
-    };
+    }
 
     unreachable!()
 }

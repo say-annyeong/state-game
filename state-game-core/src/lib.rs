@@ -1,6 +1,10 @@
+#![allow(unused)] // todo: delete
+#![deny(unused_mut)]
+#![warn(unused_imports)]
+
 mod bound;
 pub mod helper;
-mod mod_loader;
+mod mod_metadata;
 
 use serde_json::Value;
 
@@ -50,11 +54,7 @@ pub struct InputSpace {
 // =========================
 
 pub trait GameEngine {
-    fn step(
-        &self,
-        state: Box<dyn State>,
-        context: Context,
-    ) -> StepResult;
+    fn step(&self, state: Box<dyn State>, context: Context) -> StepResult;
 }
 
 // =========================
@@ -62,11 +62,7 @@ pub trait GameEngine {
 // =========================
 
 pub trait SelectionStrategy {
-    fn select(
-        &self,
-        inputs: Vec<(Box<dyn Input>, f64)>,
-        context: &Context,
-    ) -> Box<dyn Input>;
+    fn select(&self, inputs: Vec<(Box<dyn Input>, f64)>, context: &Context) -> Box<dyn Input>;
 }
 
 // =========================
@@ -172,33 +168,19 @@ pub trait ModificationSpecifications {
 // =========================
 
 pub trait InputProvider {
-    fn provide(
-        &self,
-        state: &Box<dyn State>,
-    ) -> Vec<Box<dyn InputSchema>>;
+    fn provide(&self, state: &Box<dyn State>) -> Vec<Box<dyn InputSchema>>;
 }
 
 pub trait InputGenerator {
-    fn generate(
-        &self,
-        schema: &Box<dyn InputSchema>,
-    ) -> Box<dyn Iterator<Item = Box<dyn Input>>>;
+    fn generate(&self, schema: &Box<dyn InputSchema>) -> Box<dyn Iterator<Item = Box<dyn Input>>>;
 }
 
 pub trait InputFilter {
-    fn allow(
-        &self,
-        state: &Box<dyn State>,
-        input: &Box<dyn Input>,
-    ) -> bool;
+    fn allow(&self, state: &Box<dyn State>, input: &Box<dyn Input>) -> bool;
 }
 
 pub trait InputWeight {
-    fn weight(
-        &self,
-        state: &Box<dyn State>,
-        input: &Box<dyn Input>,
-    ) -> f64;
+    fn weight(&self, state: &Box<dyn State>, input: &Box<dyn Input>) -> f64;
 }
 
 // =========================
@@ -206,11 +188,7 @@ pub trait InputWeight {
 // =========================
 
 pub trait StateTransformer {
-    fn apply(
-        &self,
-        state: &Box<dyn State>,
-        input: &Box<dyn Input>,
-    ) -> Option<Box<dyn State>>;
+    fn apply(&self, state: &Box<dyn State>, input: &Box<dyn Input>) -> Option<Box<dyn State>>;
 }
 
 // =========================
@@ -218,10 +196,7 @@ pub trait StateTransformer {
 // =========================
 
 pub trait TerminalCondition {
-    fn is_terminal(
-        &self,
-        state: &Box<dyn State>,
-    ) -> bool;
+    fn is_terminal(&self, state: &Box<dyn State>) -> bool;
 }
 
 // =========================
@@ -253,4 +228,3 @@ impl dyn GameEngine {
         */
     }
 }
-

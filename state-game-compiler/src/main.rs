@@ -1,3 +1,1 @@
-mod compiler;
-
 fn main() {}

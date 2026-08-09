@@ -1,5 +1,5 @@
-use std::ops::Bound;
 use crate::Namespace;
+use std::ops::Bound;
 
 /// A fixed-size version number.
 ///
@@ -32,12 +32,10 @@ pub struct ModificationMetadata {
     pub interactions: Vec<Interaction>,
 }
 
-
 pub struct Interaction {
     pub namespace: Namespace,
     pub kind: InteractionKind,
 }
-
 
 pub enum InteractionKind {
     /// This mod and the target mod modify overlapping functionality.
@@ -78,6 +76,6 @@ pub enum VersionRequirement {
 }
 
 pub enum Hash {
-    Sha256([u8;32]),
-    Blake3([u8;32]),
+    Sha256([u8; 32]),
+    Blake3([u8; 32]),
 }

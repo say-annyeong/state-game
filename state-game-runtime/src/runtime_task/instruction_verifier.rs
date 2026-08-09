@@ -93,7 +93,7 @@ impl InstructionVerifier {
                         &mut errors,
                         instruction_pointer,
                         *slot,
-                        type_name.clone(),
+                        *type_name,
                     );
                 }
 
@@ -124,8 +124,8 @@ impl InstructionVerifier {
                                     errors.push(VerifyError::TypeMismatch {
                                         instruction_pointer,
                                         slot: *arg_slot,
-                                        expected: expected_type.clone(),
-                                        found: found_type.clone(),
+                                        expected: *expected_type,
+                                        found: *found_type,
                                     });
                                 }
                                 _ => {}
@@ -138,7 +138,7 @@ impl InstructionVerifier {
                         &mut errors,
                         instruction_pointer,
                         *output,
-                        sig.output.clone(),
+                        sig.output,
                     );
                 }
 
@@ -168,7 +168,7 @@ impl InstructionVerifier {
                                 instruction_pointer,
                                 slot: *condition,
                                 expected: Type::Boolean,
-                                found: t.clone(),
+                                found: *t,
                             });
                         }
                         _ => {}
@@ -213,8 +213,8 @@ impl InstructionVerifier {
                                     errors.push(VerifyError::TypeMismatch {
                                         instruction_pointer,
                                         slot: *arg_slot,
-                                        expected: expected_type.clone(),
-                                        found: found_type.clone(),
+                                        expected: *expected_type,
+                                        found: *found_type,
                                     });
                                 }
                                 _ => {}
@@ -227,7 +227,7 @@ impl InstructionVerifier {
                         &mut errors,
                         instruction_pointer,
                         *output,
-                        sig.output.clone(),
+                        sig.output,
                     );
                 }
 
@@ -265,8 +265,8 @@ impl InstructionVerifier {
                                             errors.push(VerifyError::TypeMismatch {
                                                 instruction_pointer,
                                                 slot: *slot,
-                                                expected: expected_type.clone(),
-                                                found: found_type.clone(),
+                                                expected: *expected_type,
+                                                found: *found_type,
                                             });
                                         }
                                         _ => {}
@@ -291,7 +291,7 @@ impl InstructionVerifier {
                                         &mut errors,
                                         instruction_pointer,
                                         *slot,
-                                        output_type.clone(),
+                                        *output_type,
                                     );
                                 }
                             }
@@ -328,7 +328,7 @@ fn bind_slot(
             errors.push(VerifyError::TypeMismatch {
                 instruction_pointer,
                 slot,
-                expected: original.clone(),
+                expected: *original,
                 found: attempted,
             });
         }

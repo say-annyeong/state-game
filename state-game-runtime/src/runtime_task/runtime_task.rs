@@ -369,10 +369,7 @@ impl RuntimeTask {
                 let resolved_inputs = {
                     let mut result = HashMap::new();
                     for slot in inputs {
-                        let read = match self.read(*slot) {
-                            Ok(read) => read,
-                            Err(error) => return Err(error),
-                        };
+                        let read = self.read(*slot)?;
                         result.insert(*slot, read);
                     }
                     result
@@ -890,7 +887,7 @@ impl RuntimeTask {
                 }
                 let namespace = str_!(arguments[0]);
                 let identifier = str_!(arguments[1]);
-                let key = (Namespace { 0: namespace }, Identifier { 0: identifier });
+                let key = (Namespace(namespace), Identifier(identifier));
                 let value = match self.global_memory.try_get(&key) {
                     TryResult::Present(value) => {
                         Value::Result(Ok(Box::new(value.value().clone())))
@@ -920,7 +917,7 @@ impl RuntimeTask {
                 let namespace = str_!(arguments[0]);
                 let identifier = str_!(arguments[1]);
                 let input = arguments[2].clone();
-                let key = (Namespace { 0: namespace }, Identifier { 0: identifier });
+                let key = (Namespace(namespace), Identifier(identifier));
                 let value = match self.global_memory.try_entry(key) {
                     Some(Entry::Occupied(mut entry)) => {
                         entry.insert(input.deref().clone());

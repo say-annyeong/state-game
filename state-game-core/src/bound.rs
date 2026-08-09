@@ -1,6 +1,6 @@
+use crate::{Identifier, Namespace};
 use std::any::Any;
 use std::sync::Arc;
-use crate::{Identifier, Namespace};
 
 /// 노드 고유 ID — Binding 추적 / 캐시 키 / dependency graph 키
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -30,7 +30,7 @@ impl LogicValue {
     pub fn or(self, other: Self) -> Self {
         match (self, other) {
             (Self::True, _) => Self::True,
-            (_, Self::True ) => Self::True,
+            (_, Self::True) => Self::True,
             (Self::False, Self::False) => Self::False,
             _ => Self::Unknown,
         }
@@ -60,9 +60,18 @@ pub enum LogicOperators {
 impl LogicOperators {
     pub fn combine(&self, inputs: &[LogicValue]) -> LogicValue {
         match self {
-            Self::And => inputs.iter().copied().fold(LogicValue::True, LogicValue::and),
-            Self::Or  => inputs.iter().copied().fold(LogicValue::True,  LogicValue::or),
-            Self::Not => inputs.get(0).copied().map_or(LogicValue::Unknown, LogicValue::not),
+            Self::And => inputs
+                .iter()
+                .copied()
+                .fold(LogicValue::True, LogicValue::and),
+            Self::Or => inputs
+                .iter()
+                .copied()
+                .fold(LogicValue::True, LogicValue::or),
+            Self::Not => inputs
+                .get(0)
+                .copied()
+                .map_or(LogicValue::Unknown, LogicValue::not),
             Self::Custom(op) => op.combine(inputs),
         }
     }
@@ -71,7 +80,7 @@ impl LogicOperators {
 pub enum FunctionOutputs {
     AbstractSyntaxTree(Expression),
     Data(Data),
-    Both(Expression, Data)
+    Both(Expression, Data),
 }
 
 impl FunctionOutputs {
@@ -84,11 +93,17 @@ impl FunctionOutputs {
     }
 
     pub fn expr_ref(&self) -> Option<&Expression> {
-        match self { Self::AbstractSyntaxTree(a) | Self::Both(a, _) => Some(a), _ => None }
+        match self {
+            Self::AbstractSyntaxTree(a) | Self::Both(a, _) => Some(a),
+            _ => None,
+        }
     }
 
     pub fn data_ref(&self) -> Option<&Data> {
-        match self { Self::Data(d) | Self::Both(_, d) => Some(d), _ => None }
+        match self {
+            Self::Data(d) | Self::Both(_, d) => Some(d),
+            _ => None,
+        }
     }
 }
 
@@ -112,7 +127,7 @@ pub enum ParamRole {
 #[derive(Debug, Clone)]
 pub struct ParamBinding {
     pub child_index: usize,
-    pub role:        ParamRole,
+    pub role: ParamRole,
 }
 
 #[derive(Clone)]

@@ -1,3 +1,4 @@
+use std::fmt::{Debug, Formatter};
 use std::iter::FusedIterator;
 use std::mem::MaybeUninit;
 use std::sync::Arc;
@@ -934,6 +935,48 @@ impl<T> IntoIterator for PersistentVector<T> {
 
     fn into_iter(self) -> Self::IntoIter {
         Iter::new(self.root, self.size)
+    }
+}
+
+impl<T> FromIterator<T> for PersistentVector<T> {
+    fn from_iter<I: IntoIterator<Item = T>>(iter: I) -> Self {
+        let mut result = Self::new();
+
+        for value in iter {
+            result = result.push(Arc::new(value));
+        }
+
+        result
+    }
+}
+
+impl<T: PartialEq> PartialEq for PersistentVector<T> {
+    fn eq(&self, other: &Self) -> bool {
+        if self.size != other.size {
+            return false;
+        }
+
+        for index in 0..self.size {
+            if self.get(index) != other.get(index) {
+                return false;
+            }
+        }
+
+        true
+    }
+}
+
+impl<T: Eq> Eq for PersistentVector<T> {}
+
+impl<T: Debug> Debug for PersistentVector<T> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        let mut debug_list = f.debug_list();
+
+        for value in self.iter() {
+            debug_list.entry(&value);
+        }
+
+        debug_list.finish()
     }
 }
 

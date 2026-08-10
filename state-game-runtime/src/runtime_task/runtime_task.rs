@@ -8,7 +8,7 @@ use crossbeam_channel::{Receiver, Sender};
 use dashmap::{DashMap, Entry};
 use dashmap::try_result::TryResult;
 use state_game_core::{Identifier, Namespace, helper::try_until};
-
+use crate::persistent_vector::PersistentVector;
 use crate::runtime_task::{
     event::{
         StateChange, TrapReason, RuntimeTaskCallEvent, RuntimeTaskEvent, RuntimeTaskLog,
@@ -701,7 +701,8 @@ impl RuntimeTask {
                             length: len,
                         })
                     })?;
-                Ok(v[i].clone())
+                let boxed = v.get(i).map(|arc| Box::new((*arc).clone()));
+                Ok(Value::Option(boxed))
             }
 
             // ── Vector init ───────────────────────────────────────────────────
@@ -715,7 +716,9 @@ impl RuntimeTask {
                         "Argument count Mismatch".to_string(),
                     )));
                 }
-                Ok(Value::Vector(vec![(*args[0]).clone()]))
+                let vector = PersistentVector::new();
+                let result = vector.push(args[0].clone());
+                Ok(Value::Vector(result))
             }
 
             // ── Vector push ───────────────────────────────────────────────────
@@ -729,8 +732,8 @@ impl RuntimeTask {
                         "Argument count Mismatch".to_string(),
                     )));
                 }
-                let mut v = vec_!(args[0]);
-                v.push((*args[1]).clone());
+                let v = vec_!(args[0]);
+                let v = v.push((args[1]).clone());
                 Ok(Value::Vector(v))
             }
 
@@ -745,14 +748,14 @@ impl RuntimeTask {
                         "Argument count Mismatch".to_string(),
                     )));
                 }
-                let mut v = vec_!(args[0]);
+                let v = vec_!(args[0]);
                 if v.is_empty() {
                     return Err(self.trap(TrapReason::IndexOutOfBounds {
                         index: -1,
                         length: 0,
                     }));
                 }
-                v.pop();
+                let v = v.pop().unwrap();
                 Ok(Value::Vector(v))
             }
 

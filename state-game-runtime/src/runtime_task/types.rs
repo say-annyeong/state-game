@@ -1,3 +1,5 @@
+use crate::persistent_vector::PersistentVector;
+
 #[derive(Clone, Copy, Ord, PartialOrd, Eq, PartialEq, Debug)]
 pub enum Type {
     Integer,
@@ -33,7 +35,7 @@ pub enum Value {
     String(String),
     Char(char),
     Boolean(bool),
-    Vector(Vec<Value>),
+    Vector(PersistentVector<Value>),
 
     Option(Option<Box<Value>>),
     Result(Result<Box<Value>, Box<Value>>),

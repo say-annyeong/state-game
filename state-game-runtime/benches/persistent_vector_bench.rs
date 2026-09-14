@@ -1,9 +1,4 @@
-use criterion::{
-    black_box,
-    criterion_group,
-    criterion_main,
-    Criterion,
-};
+use criterion::{Criterion, black_box, criterion_group, criterion_main};
 
 use std::sync::Arc;
 
@@ -24,7 +19,6 @@ fn bench_push(c: &mut Criterion) {
         });
     });
 
-
     group.bench_function("persistent_vector_push", |b| {
         b.iter(|| {
             let mut vec = PersistentVector::new();
@@ -40,7 +34,6 @@ fn bench_push(c: &mut Criterion) {
     group.finish();
 }
 
-
 fn bench_get(c: &mut Criterion) {
     let mut pv = PersistentVector::new();
 
@@ -48,16 +41,13 @@ fn bench_get(c: &mut Criterion) {
         pv = pv.push(Arc::new(i));
     }
 
-
     let mut vec = Vec::new();
 
     for i in 0..100000 {
         vec.push(i);
     }
 
-
     let mut group = c.benchmark_group("get");
-
 
     group.bench_function("vec_get", |b| {
         b.iter(|| {
@@ -71,7 +61,6 @@ fn bench_get(c: &mut Criterion) {
         });
     });
 
-
     group.bench_function("persistent_vector_get", |b| {
         b.iter(|| {
             let mut sum = 0;
@@ -84,10 +73,8 @@ fn bench_get(c: &mut Criterion) {
         });
     });
 
-
     group.finish();
 }
-
 
 fn bench_iter(c: &mut Criterion) {
     let mut pv = PersistentVector::new();
@@ -96,24 +83,18 @@ fn bench_iter(c: &mut Criterion) {
         pv = pv.push(Arc::new(i));
     }
 
+    c.bench_function("persistent_vector_iter", |b| {
+        b.iter(|| {
+            let mut sum = 0;
 
-    c.bench_function(
-        "persistent_vector_iter",
-        |b| {
-            b.iter(|| {
-                let mut sum = 0;
+            for value in pv.iter() {
+                sum += *value;
+            }
 
-                for value in pv.iter() {
-                    sum += *value;
-                }
-
-                black_box(sum);
-            });
-        },
-    );
+            black_box(sum);
+        });
+    });
 }
-
-
 
 fn bench_clone(c: &mut Criterion) {
     let mut pv = PersistentVector::new();
@@ -122,20 +103,14 @@ fn bench_clone(c: &mut Criterion) {
         pv = pv.push(Arc::new(i));
     }
 
+    c.bench_function("persistent_vector_clone", |b| {
+        b.iter(|| {
+            let cloned = pv.clone();
 
-    c.bench_function(
-        "persistent_vector_clone",
-        |b| {
-            b.iter(|| {
-                let cloned = pv.clone();
-
-                black_box(cloned);
-            });
-        },
-    );
+            black_box(cloned);
+        });
+    });
 }
-
-
 
 fn bench_set(c: &mut Criterion) {
     let mut pv = PersistentVector::new();
@@ -144,25 +119,14 @@ fn bench_set(c: &mut Criterion) {
         pv = pv.push(Arc::new(i));
     }
 
+    c.bench_function("persistent_vector_set", |b| {
+        b.iter(|| {
+            let result = pv.set(black_box(50000), black_box(999)).unwrap();
 
-    c.bench_function(
-        "persistent_vector_set",
-        |b| {
-            b.iter(|| {
-                let result =
-                    pv.set(
-                        black_box(50000),
-                        black_box(999),
-                    )
-                        .unwrap();
-
-                black_box(result);
-            });
-        },
-    );
+            black_box(result);
+        });
+    });
 }
-
-
 
 criterion_group!(
     benches,

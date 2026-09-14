@@ -1,8 +1,9 @@
 #![allow(unused)] // todo: delete
 #![deny(unused_mut)]
+#![warn(unused_imports)]
 
+pub mod persistent_vector;
+mod runtime_engine;
 mod runtime_task;
 mod virtual_machine_instruction_metadata;
-mod runtime_engine;
-pub mod persistent_vector;
-
+mod scheduler;

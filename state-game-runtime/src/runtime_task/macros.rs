@@ -5,10 +5,7 @@ macro_rules! define_function_registry {
         $vis_reg:vis const $registry_name:ident;
 
         $(
-            $function_name:ident => {
-                inputs: [$($input:expr),* $(,)?],
-                output: $output:expr
-            }
+            $function_name:ident => $body:tt
         ),* $(,)?
     ) => {
         #[repr(usize)]
@@ -31,12 +28,7 @@ macro_rules! define_function_registry {
             FunctionRegistry {
                 functions: [
                     $(
-                        FunctionSignature {
-                            inputs: &[
-                                $($input),*
-                            ],
-                            output: $output,
-                        },
+                        FunctionSignature $body,
                     )*
                 ],
             };

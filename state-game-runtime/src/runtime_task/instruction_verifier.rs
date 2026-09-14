@@ -1,10 +1,23 @@
-use crate::runtime_task::instruction::{DefinedFunctionSignature, FunctionIdentifier, FunctionRegistry, FunctionSignature, Functions, Instruction, Literal, Slot, SpecialFunctions, FUNCTION_REGISTRY, SPECIAL_FUNCTIONS_REGISTRY};
-use crate::runtime_task::types::Type;
-use std::collections::HashMap;
-use std::sync::Arc;
+use std::{collections::HashMap, sync::Arc};
 
-#[derive(Debug, PartialEq, Eq, Clone, Copy)]
-pub enum VerifyError {
+use crate::{
+    runtime_task::{
+        types::{
+            ConcreteType,
+            PrimitiveType,
+            TypeExpression
+        },
+        instruction::{
+            DefinedFunctionSignature, FUNCTION_REGISTRY, FunctionIdentifier,
+            Functions, Instruction, Literal, SPECIAL_FUNCTIONS_REGISTRY, Slot,
+            SpecialFunctions,
+        },
+    }
+};
+use crate::virtual_machine_instruction_metadata::{ExpressionFunctionMetadata, VerifyFunctionMetadata};
+
+#[derive(Debug, PartialEq, Eq, Clone)]
+pub enum VerifyError<'a> {
     /// A slot was read before it was assigned.
     UnboundSlot {
         instruction_pointer: usize,
@@ -14,8 +27,8 @@ pub enum VerifyError {
     TypeMismatch {
         instruction_pointer: usize,
         slot: Slot,
-        expected: Type,
-        found: Type,
+        expected: TypeExpression<'a>,
+        found: TypeExpression<'a>,
     },
     /// The literal value in a Bind cannot be parsed as the declared type.
     InvalidLiteral {
@@ -49,14 +62,13 @@ pub enum VerifyError {
     },
 }
 
-pub struct InstructionVerifier {
-    instruction: Arc<[Instruction]>,
-    defined_functions: Arc<HashMap<FunctionIdentifier, DefinedFunctionSignature>>,
+pub struct InstructionVerifier<'a> {
+    function_instruction: Arc<[(VerifyFunctionMetadata<'a>, Arc<[Instruction<'a>]>)]>,
 }
 
-impl InstructionVerifier {
+impl<'a> InstructionVerifier<'a> {
     pub fn new(
-        instruction: Arc<[Instruction]>,
+        instruction: Arc<[Instruction<'a>]>,
         defined_functions: Arc<HashMap<FunctionIdentifier, DefinedFunctionSignature>>,
     ) -> Self {
         Self {
@@ -71,78 +83,72 @@ impl InstructionVerifier {
         let instructions = &self.instruction;
         let len = instructions.len();
         let mut errors = Vec::new();
-        // slot → type assigned so far (forward pass)
-        let mut slots: HashMap<Slot, Type> = HashMap::new();
+        let mut types = Vec::new();
 
         for (instruction_pointer, instruction) in instructions.iter().enumerate() {
             match instruction {
-                // ── Bind ────────────────────────────────────────────────────
                 Instruction::Bind {
                     slot,
                     type_name,
                     value,
                 } => {
-                    if !literal_matches_type(value, type_name) {
-                        errors.push(VerifyError::InvalidLiteral {
-                            instruction_pointer,
-                            slot: *slot,
-                        });
-                    }
-                    bind_slot(
-                        &mut slots,
-                        &mut errors,
+                    Self::verify_bind(
                         instruction_pointer,
                         *slot,
                         *type_name,
+                        value,
+                        &mut errors,
+                        &mut types,
                     );
                 }
-
-                // ── Call ────────────────────────────────────────────────────
                 Instruction::Call {
                     function_name,
+                    generic_arguments,
                     inputs,
                     output,
                 } => {
-                    let sig = &FUNCTION_REGISTRY.functions[*function_name as usize];
-
-                    // argument count
-                    if inputs.len() != sig.inputs.len() {
-                        errors.push(VerifyError::ArgumentCountMismatch {
-                            instruction_pointer,
-                            expected: sig.inputs.len(),
-                            found: inputs.len(),
-                        });
-                    } else {
-                        // argument types
-                        for (arg_slot, expected_type) in inputs.iter().zip(sig.inputs.iter()) {
-                            match slots.get(arg_slot) {
-                                None => errors.push(VerifyError::UnboundSlot {
-                                    instruction_pointer,
-                                    slot: *arg_slot,
-                                }),
-                                Some(found_type) if !type_compatible(found_type, expected_type) => {
-                                    errors.push(VerifyError::TypeMismatch {
-                                        instruction_pointer,
-                                        slot: *arg_slot,
-                                        expected: *expected_type,
-                                        found: *found_type,
-                                    });
-                                }
-                                _ => {}
-                            }
-                        }
-                    }
-
-                    bind_slot(
-                        &mut slots,
-                        &mut errors,
+                    Self::verify_call(
                         instruction_pointer,
+                        *function_name,
+                        generic_arguments,
+                        inputs,
                         *output,
-                        sig.output,
+                        &mut errors,
+                        &mut types,
                     );
                 }
-
-                // ── Jump ────────────────────────────────────────────────────
+                Instruction::SpecialCall {
+                    function_name,
+                    generic_arguments,
+                    inputs,
+                    output,
+                } => {
+                    Self::verify_special_call(
+                        instruction_pointer,
+                        *function_name,
+                        generic_arguments,
+                        inputs,
+                        *output,
+                        &mut errors,
+                        &mut types,
+                    );
+                }
+                Instruction::DefinedCall {
+                    function_identifier,
+                    generic_arguments,
+                    inputs,
+                    outputs,
+                } => {
+                    self.verify_defined_call(
+                        instruction_pointer,
+                        function_identifier,
+                        generic_arguments,
+                        inputs,
+                        outputs,
+                        &mut errors,
+                        &mut types,
+                    );
+                }
                 Instruction::Jump { target_position } => {
                     if *target_position >= len {
                         errors.push(VerifyError::JumpOutOfBounds {
@@ -151,24 +157,22 @@ impl InstructionVerifier {
                         });
                     }
                 }
-
-                // ── ConditionalJump ─────────────────────────────────────────
                 Instruction::ConditionalJump {
                     condition,
                     true_target_position,
                     false_target_position,
                 } => {
-                    match slots.get(condition) {
+                    match types.get(*condition as usize) {
                         None => errors.push(VerifyError::UnboundSlot {
                             instruction_pointer,
                             slot: *condition,
                         }),
-                        Some(t) if *t != Type::Boolean => {
+                        Some(t) if *t != TypeExpression::Primitive(PrimitiveType::Boolean) => {
                             errors.push(VerifyError::TypeMismatch {
                                 instruction_pointer,
                                 slot: *condition,
-                                expected: Type::Boolean,
-                                found: *t,
+                                expected: TypeExpression::Primitive(PrimitiveType::Boolean),
+                                found: t.clone(),
                             });
                         }
                         _ => {}
@@ -186,125 +190,234 @@ impl InstructionVerifier {
                         });
                     }
                 }
-
-                Instruction::SpecialCall {
-                    function_name,
-                    inputs,
-                    output,
-                } => {
-                    let sig = &SPECIAL_FUNCTIONS_REGISTRY.functions[*function_name as usize];
-
-                    // argument count
-                    if inputs.len() != sig.inputs.len() {
-                        errors.push(VerifyError::ArgumentCountMismatch {
-                            instruction_pointer,
-                            expected: sig.inputs.len(),
-                            found: inputs.len(),
-                        });
-                    } else {
-                        // argument types
-                        for (arg_slot, expected_type) in inputs.iter().zip(sig.inputs.iter()) {
-                            match slots.get(arg_slot) {
-                                None => errors.push(VerifyError::UnboundSlot {
-                                    instruction_pointer,
-                                    slot: *arg_slot,
-                                }),
-                                Some(found_type) if !type_compatible(found_type, expected_type) => {
-                                    errors.push(VerifyError::TypeMismatch {
-                                        instruction_pointer,
-                                        slot: *arg_slot,
-                                        expected: *expected_type,
-                                        found: *found_type,
-                                    });
-                                }
-                                _ => {}
-                            }
-                        }
-                    }
-
-                    bind_slot(
-                        &mut slots,
-                        &mut errors,
-                        instruction_pointer,
-                        *output,
-                        sig.output,
-                    );
-                }
-
-                // ── DefinedCall ─────────────────────────────────────────────
-                Instruction::DefinedCall {
+                Instruction::ReturnDefinedCall {
                     function_identifier,
-                    inputs,
-                    destination_slots,
+                    outputs,
                 } => {
-                    match self.defined_functions.get(function_identifier) {
-                        None => {
-                            errors.push(VerifyError::CanNotFoundDefinedFunction {
-                                instruction_pointer,
-                                function_identifier: *function_identifier,
-                            });
-                        }
-                        Some(sig) => {
-                            // ── inputs: slots read by the callee ─────────────
-                            if inputs.len() != sig.inputs.len() {
-                                errors.push(VerifyError::DefinedFunctionArgumentCountMismatch {
-                                    instruction_pointer,
-                                    expected: sig.inputs.len(),
-                                    found: inputs.len(),
-                                });
-                            } else {
-                                for (slot, expected_type) in inputs.iter().zip(sig.inputs.iter()) {
-                                    match slots.get(slot) {
-                                        None => errors.push(VerifyError::UnboundSlot {
-                                            instruction_pointer,
-                                            slot: *slot,
-                                        }),
-                                        Some(found_type)
-                                            if !type_compatible(found_type, expected_type) =>
-                                        {
-                                            errors.push(VerifyError::TypeMismatch {
-                                                instruction_pointer,
-                                                slot: *slot,
-                                                expected: *expected_type,
-                                                found: *found_type,
-                                            });
-                                        }
-                                        _ => {}
-                                    }
-                                }
-                            }
-
-                            // ── destination_slots: caller slots written with output values ──
-                            // Count must match outputs; each slot is bound to the output type.
-                            if destination_slots.len() != sig.destinations.len() {
-                                errors.push(VerifyError::DefinedFunctionReturnCountMismatch {
-                                    instruction_pointer,
-                                    expected: sig.destinations.len(),
-                                    found: destination_slots.len(),
-                                });
-                            } else {
-                                for (slot, output_type) in
-                                    destination_slots.iter().zip(sig.destinations.iter())
-                                {
-                                    bind_slot(
-                                        &mut slots,
-                                        &mut errors,
-                                        instruction_pointer,
-                                        *slot,
-                                        *output_type,
-                                    );
-                                }
-                            }
-                        }
-                    }
-                }
-                Instruction::ReturnDefinedCall { function_identifier, outputs } => {
-
+                    self.verify_return_defined_call(
+                        instruction_pointer,
+                        function_identifier,
+                        outputs,
+                        &mut errors,
+                        &mut types,
+                    );
                 }
             }
         }
 
         errors
+    }
+
+    fn verify_bind<'b>(
+        instruction_pointer: usize,
+        slot: Slot,
+        primitive_type: PrimitiveType,
+        value: &Literal,
+        errors: &mut Vec<VerifyError<'b>>,
+        types: &mut Vec<TypeExpression<'b>>,
+    ) {
+        if !literal_matches_type(value, &primitive_type) {
+            errors.push(VerifyError::InvalidLiteral {
+                instruction_pointer,
+                slot,
+            });
+        }
+        bind_slot(
+            types,
+            errors,
+            instruction_pointer,
+            slot,
+            TypeExpression::Primitive(primitive_type),
+        );
+    }
+
+    fn verify_call<'b>(
+        instruction_pointer: usize,
+        function_name: Functions,
+        generic_arguments: &Box<[ConcreteType]>,
+        inputs: &Vec<Slot>,
+        output: Slot,
+        errors: &mut Vec<VerifyError<'b>>,
+        types: &mut Vec<TypeExpression<'b>>,
+    ) {
+        let sig = &FUNCTION_REGISTRY.functions[function_name as usize];
+
+        // argument count
+        if inputs.len() != sig.inputs.len() {
+            errors.push(VerifyError::ArgumentCountMismatch {
+                instruction_pointer,
+                expected: sig.inputs.len(),
+                found: inputs.len(),
+            });
+        } else {
+            // argument types
+            for (arg_slot, expected_type) in inputs.iter().zip(sig.inputs.iter()) {
+                match types.get(*arg_slot as usize) {
+                    None => errors.push(VerifyError::UnboundSlot {
+                        instruction_pointer,
+                        slot: *arg_slot,
+                    }),
+                    Some(found_type) if !type_compatible(found_type, expected_type) => {
+                        errors.push(VerifyError::TypeMismatch {
+                            instruction_pointer,
+                            slot: *arg_slot,
+                            expected: expected_type.clone(),
+                            found: found_type.clone(),
+                        });
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        bind_slot(types, errors, instruction_pointer, output, sig.output.clone());
+    }
+
+    fn verify_special_call<'b>(
+        instruction_pointer: usize,
+        function_name: SpecialFunctions,
+        generic_arguments: &Box<[ConcreteType]>,
+        inputs: &Vec<Slot>,
+        output: Slot,
+        errors: &mut Vec<VerifyError<'b>>,
+        types: &mut Vec<TypeExpression<'b>>,
+    ) {
+        let sig = &SPECIAL_FUNCTIONS_REGISTRY.functions[function_name as usize];
+
+        // argument count
+        if inputs.len() != sig.inputs.len() {
+            errors.push(VerifyError::ArgumentCountMismatch {
+                instruction_pointer,
+                expected: sig.inputs.len(),
+                found: inputs.len(),
+            });
+        } else {
+            // argument types
+            for (arg_slot, expected_type) in inputs.iter().zip(sig.inputs.iter()) {
+                match types.get(*arg_slot as usize) {
+                    None => errors.push(VerifyError::UnboundSlot {
+                        instruction_pointer,
+                        slot: *arg_slot,
+                    }),
+                    Some(found_type) if !type_compatible(found_type, expected_type) => {
+                        errors.push(VerifyError::TypeMismatch {
+                            instruction_pointer,
+                            slot: *arg_slot,
+                            expected: expected_type.clone(),
+                            found: found_type.clone(),
+                        });
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        bind_slot(types, errors, instruction_pointer, output, sig.output.clone());
+    }
+
+    fn verify_defined_call<'b>(
+        &self,
+        instruction_pointer: usize,
+        function_identifier: &FunctionIdentifier,
+        generic_arguments: &Box<[ConcreteType]>,
+        inputs: &Vec<Slot>,
+        outputs: &Vec<Slot>,
+        errors: &mut Vec<VerifyError<'b>>,
+        types: &mut Vec<TypeExpression<'b>>,
+    ) {
+        match self.defined_functions.get(function_identifier) {
+            None => {
+                errors.push(VerifyError::CanNotFoundDefinedFunction {
+                    instruction_pointer,
+                    function_identifier: *function_identifier,
+                });
+            }
+            Some(sig) => {
+                // ── inputs: slots read by the callee ─────────────
+                if inputs.len() != sig.inputs.len() {
+                    errors.push(VerifyError::DefinedFunctionArgumentCountMismatch {
+                        instruction_pointer,
+                        expected: sig.inputs.len(),
+                        found: inputs.len(),
+                    });
+                } else {
+                    for (slot, expected_type) in inputs.iter().zip(sig.inputs.iter()) {
+                        match types.get(*slot as usize) {
+                            None => errors.push(VerifyError::UnboundSlot {
+                                instruction_pointer,
+                                slot: *slot,
+                            }),
+                            Some(found_type) if !type_compatible(found_type, expected_type) => {
+                                errors.push(VerifyError::TypeMismatch {
+                                    instruction_pointer,
+                                    slot: *slot,
+                                    expected: expected_type.clone(),
+                                    found: found_type.clone(),
+                                });
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+
+                // ── destination_slots: caller slots written with output values ──
+                // Count must match outputs; each slot is bound to the output type.
+                if outputs.len() != sig.outputs.len() {
+                    errors.push(VerifyError::DefinedFunctionReturnCountMismatch {
+                        instruction_pointer,
+                        expected: sig.outputs.len(),
+                        found: outputs.len(),
+                    });
+                } else {
+                    for (slot, output_type) in outputs.iter().zip(sig.outputs.iter()) {
+                        bind_slot(
+                            types,
+                            errors,
+                            instruction_pointer,
+                            *slot,
+                            output_type.clone(),
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    fn verify_return_defined_call<'b>(
+        &self,
+        instruction_pointer: usize,
+        function_identifier: &FunctionIdentifier,
+        outputs: &Vec<Slot>,
+        errors: &mut Vec<VerifyError<'b>>,
+        types: &mut Vec<TypeExpression<'b>>,
+    ) {
+        match self.defined_functions.get(function_identifier) {
+            None => {
+                errors.push(VerifyError::CanNotFoundDefinedFunction {
+                    instruction_pointer,
+                    function_identifier: *function_identifier,
+                });
+            }
+            Some(sig) => {
+                if outputs.len() != sig.outputs.len() {
+                    errors.push(VerifyError::DefinedFunctionReturnCountMismatch {
+                        instruction_pointer,
+                        expected: sig.outputs.len(),
+                        found: outputs.len(),
+                    });
+                } else {
+                    for (slot, output_type) in outputs.iter().zip(sig.outputs.iter()) {
+                        bind_slot(
+                            types,
+                            errors,
+                            instruction_pointer,
+                            *slot,
+                            output_type.clone(),
+                        );
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -313,22 +426,22 @@ impl InstructionVerifier {
 ///
 /// The first write wins: it sets the canonical type for the slot.
 /// Any later write that would change the type is recorded as `TypeMismatch`.
-fn bind_slot(
-    slots: &mut HashMap<Slot, Type>,
-    errors: &mut Vec<VerifyError>,
+fn bind_slot<'a>(
+    slots: &mut Vec<TypeExpression<'a>>,
+    errors: &mut Vec<VerifyError<'a>>,
     instruction_pointer: usize,
     slot: Slot,
-    attempted: Type,
+    attempted: TypeExpression<'a>,
 ) {
-    match slots.get(&slot) {
+    match slots.get(slot as usize) {
         None => {
-            slots.insert(slot, attempted);
+            slots.insert(slot as usize, attempted);
         }
         Some(original) if *original != attempted => {
             errors.push(VerifyError::TypeMismatch {
                 instruction_pointer,
                 slot,
-                expected: *original,
+                expected: original.clone(),
                 found: attempted,
             });
         }
@@ -337,14 +450,14 @@ fn bind_slot(
 }
 
 /// Returns true when the literal variant matches the declared type.
-fn literal_matches_type(literal: &Literal, ty: &Type) -> bool {
+fn literal_matches_type(literal: &Literal, ty: &PrimitiveType) -> bool {
     matches!(
         (literal, ty),
-        (Literal::Integer(_), Type::Integer)
-            | (Literal::Float(_), Type::Float)
-            | (Literal::Boolean(_), Type::Boolean)
-            | (Literal::Char(_), Type::Char)
-            | (Literal::String(_), Type::String)
+        (Literal::Integer(_), PrimitiveType::Integer)
+            | (Literal::Float(_), PrimitiveType::Float)
+            | (Literal::Boolean(_), PrimitiveType::Boolean)
+            | (Literal::Char(_), PrimitiveType::Char)
+            | (Literal::String(_), PrimitiveType::String)
     )
 }
 
@@ -356,27 +469,21 @@ fn literal_matches_type(literal: &Literal, ty: &Type) -> bool {
 ///   - `Result<T, Any>`     accepts `Result<T, E>` where ok-side matches T
 ///   - `Result<Any, E>`     accepts `Result<T, E>` where err-side matches E
 ///   - bare `Any`           accepts any type
-fn type_compatible(found: &Type, expected: &Type) -> bool {
+fn type_compatible(found: &TypeExpression, expected: &TypeExpression) -> bool {
     match (found, expected) {
-        // Bare Any wildcard
-        (_, Type::Any) => true,
-        // Option<Any> accepts any Option<_>
-        (Type::Option(_), Type::Option(Type::Any)) => true,
-        // Option<T>: recurse on inner type
-        (Type::Option(f), Type::Option(e)) => type_compatible(f, e),
-        // Result<Any, Any> accepts any Result<_, _>
-        (Type::Result(_, _), Type::Result(Type::Any, Type::Any)) => true,
-        // Result<T, Any>: ok side must match, err side is wildcard
-        (Type::Result(fk, _), Type::Result(ek, Type::Any)) => type_compatible(fk, ek),
-        // Result<Any, E>: err side must match, ok side is wildcard
-        (Type::Result(_, fv), Type::Result(Type::Any, ev)) => type_compatible(fv, ev),
-        // Result<T, E>: recurse on both sides
-        (Type::Result(fk, fv), Type::Result(ek, ev)) => {
-            type_compatible(fk, ek) && type_compatible(fv, ev)
-        }
-        // Vector<T>: recurse on inner type
-        (Type::Vector(f), Type::Vector(e)) => type_compatible(f, e),
-        // Everything else: exact equality
-        _ => found == expected,
+        (TypeExpression::Primitive(found), TypeExpression::Primitive(expected)) => found == expected,
+        (TypeExpression::Vector(found), TypeExpression::Vector(expected)) => found == expected,
+        (TypeExpression::Option(found), TypeExpression::Option(expected)) => found == expected,
+        (
+            TypeExpression::Result {
+                ok: found_ok,
+                err: found_err,
+            },
+            TypeExpression::Result {
+                ok: expected_ok,
+                err: expected_err,
+            },
+        ) => found_ok == expected_ok && found_err == expected_err,
+        _ => false,
     }
 }

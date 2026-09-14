@@ -1,27 +1,25 @@
 mod event;
 pub mod instruction;
 mod instruction_verifier;
-pub mod types;
-mod runtime_task;
 mod macros;
+mod runtime_task;
+pub mod types;
 
 #[cfg(test)]
 mod test {
     use crate::runtime_task::{
         instruction::{Functions, Instruction, Literal},
         instruction_verifier::InstructionVerifier,
-        types::{Type, Value},
         runtime_task::{Logger, RuntimeTask},
+        types::{Type, Value},
     };
-    use std::collections::HashMap;
-    use std::{ops::Deref, sync::Arc, thread};
-    use std::sync::RwLock;
     use dashmap::DashMap;
     use state_game_core::Namespace;
+    use std::collections::HashMap;
+    use std::sync::RwLock;
+    use std::{ops::Deref, sync::Arc, thread};
 
-    fn make_virtual_machine_and_logger(
-        instructions: Arc<[Instruction]>,
-    ) -> (RuntimeTask, Logger) {
+    fn make_virtual_machine_and_logger(instructions: Arc<[Instruction]>) -> (RuntimeTask, Logger) {
         let instruction_verifier =
             InstructionVerifier::new(instructions.clone(), Arc::new(HashMap::new()))
                 .verify()
@@ -38,7 +36,9 @@ mod test {
                 0,
                 instructions.clone(),
                 Arc::new(DashMap::new()),
-                Arc::new([Namespace { 0: "noting".to_string() }])
+                Arc::new([Namespace {
+                    0: "noting".to_string(),
+                }]),
             ),
             Logger::new(logger_receiver),
         )

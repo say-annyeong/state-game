@@ -1,13 +1,12 @@
-use crate::runtime_task::instruction::{FunctionIdentifier, Slot, RuntimeTaskIdentifier};
-use crate::runtime_task::instruction_verifier::VerifyError;
-use crate::runtime_task::types::{Type, Value};
-use std::collections::HashMap;
-use std::sync::Arc;
+use std::{collections::HashMap, sync::Arc};
 
+use crate::runtime_task::{
+    instruction::{FunctionIdentifier, RuntimeTaskIdentifier, Slot},
+};
 
 pub struct RuntimeTaskEvent {
     pub virtual_machine_identifier: RuntimeTaskIdentifier,
-    pub virtual_machine_event_kind: RuntimeTaskEventKind
+    pub virtual_machine_event_kind: RuntimeTaskEventKind,
 }
 
 pub enum RuntimeTaskEventKind {
@@ -100,9 +99,9 @@ pub enum RuntimeTaskYield {
     },
 
     Finished,
-    
+
     Return {
         function_identifier: FunctionIdentifier,
         outputs: Vec<Arc<Value>>,
-    }
+    },
 }

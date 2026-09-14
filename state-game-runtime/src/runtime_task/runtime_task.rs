@@ -1,24 +1,24 @@
-use std::{
-    collections::HashMap,
-    ops::Deref,
-    sync::{Arc},
-};
+use std::{collections::HashMap, ops::Deref, sync::Arc};
 
 use crossbeam_channel::{Receiver, Sender};
-use dashmap::{DashMap, Entry};
-use dashmap::try_result::TryResult;
+use dashmap::{DashMap, Entry, try_result::TryResult};
+
 use state_game_core::{Identifier, Namespace, helper::try_until};
-use crate::persistent_vector::PersistentVector;
-use crate::runtime_task::{
-    event::{
-        StateChange, TrapReason, RuntimeTaskCallEvent, RuntimeTaskEvent, RuntimeTaskLog,
-        RuntimeTaskLogLevel, RuntimeTaskTrap, RuntimeTaskYield
+
+use crate::{
+    persistent_vector::InnerPersistentVector,
+    runtime_task::{
+        event::{
+            RuntimeTaskCallEvent, RuntimeTaskEvent, RuntimeTaskEventKind, RuntimeTaskLog,
+            RuntimeTaskLogLevel, RuntimeTaskTrap, RuntimeTaskYield, StateChange, TrapReason,
+        },
+        instruction::{
+            FunctionIdentifier, Functions, Instruction, Literal, RuntimeTaskIdentifier, Slot,
+            SpecialFunctions,
+        },
     },
-    instruction::{FunctionIdentifier, Functions, Instruction, Literal, Slot, SpecialFunctions},
-    types::{Type, Value},
 };
-use crate::runtime_task::event::RuntimeTaskEventKind;
-use crate::runtime_task::instruction::RuntimeTaskIdentifier;
+
 // ── Instruction pointer step ─────────────────────────────────────────────────
 
 enum ExecutionResult {
@@ -36,7 +36,7 @@ enum ExecutionResult {
     ReturnDefinedCall {
         function_identifier: FunctionIdentifier,
         outputs: Vec<Arc<Value>>,
-    }
+    },
 }
 
 // ── Virtual Machine ──────────────────────────────────────────────────────────
@@ -69,6 +69,34 @@ pub struct RuntimeTask {
     pub global_memory: Arc<DashMap<(Namespace, Identifier), Value>>,
     pub modification_namespace_list: Arc<[Namespace]>,
 }
+
+/*
+use std::collections::HashMap;
+
+pub struct TypeInterner {
+    types: Vec<ConcreteType>,
+    map: HashMap<ConcreteType, TypeId>,
+}
+
+impl TypeInterner {
+    pub fn intern(&mut self, ty: ConcreteType) -> TypeId {
+        if let Some(id) = self.map.get(&ty) {
+            return *id;
+        }
+
+        let id = TypeId(self.types.len() as u32);
+
+        self.types.push(ty.clone());
+        self.map.insert(ty, id);
+
+        id
+    }
+
+    pub fn get(&self, id: TypeId) -> &ConcreteType {
+        &self.types[id.0 as usize]
+    }
+}
+ */
 
 impl RuntimeTask {
     pub fn new(
@@ -148,26 +176,20 @@ impl RuntimeTask {
     }
 
     fn event_emit(&self, virtual_machine_event_kind: RuntimeTaskEventKind) {
-        self.emit(
-            RuntimeTaskEvent {
-                virtual_machine_identifier: self.virtual_machine_identifier,
-                virtual_machine_event_kind
-            }
-        )
+        self.emit(RuntimeTaskEvent {
+            virtual_machine_identifier: self.virtual_machine_identifier,
+            virtual_machine_event_kind,
+        })
     }
 
     fn log(&self, level: RuntimeTaskLogLevel, message: impl Into<String>) {
-        self.emit(
-            RuntimeTaskEvent {
-                virtual_machine_identifier: self.virtual_machine_identifier,
-                virtual_machine_event_kind: RuntimeTaskEventKind::Log(
-                    RuntimeTaskLog {
-                        level,
-                        message: message.into(),
-                    }
-                )
-            }
-        );
+        self.emit(RuntimeTaskEvent {
+            virtual_machine_identifier: self.virtual_machine_identifier,
+            virtual_machine_event_kind: RuntimeTaskEventKind::Log(RuntimeTaskLog {
+                level,
+                message: message.into(),
+            }),
+        });
     }
 
     fn trap(&self, reason: TrapReason) -> RuntimeTaskTrap {
@@ -193,15 +215,11 @@ impl RuntimeTask {
     fn write(&mut self, slot: Slot, value: Arc<Value>) {
         let old = self.slots.get(slot as usize).cloned();
         self.slots.insert(slot as usize, value.clone());
-        self.event_emit(
-            RuntimeTaskEventKind::StateChange(
-                StateChange {
-                    identifier: Self::slot_name(slot),
-                    old,
-                    new: Some(value),
-                }
-            )
-        );
+        self.event_emit(RuntimeTaskEventKind::StateChange(StateChange {
+            identifier: Self::slot_name(slot),
+            old,
+            new: Some(value),
+        }));
     }
 
     // ── Main loop ─────────────────────────────────────────────────────────────
@@ -233,11 +251,14 @@ impl RuntimeTask {
                     });
                 }
 
-                Ok(ExecutionResult::ReturnDefinedCall { function_identifier, outputs }) => {
+                Ok(ExecutionResult::ReturnDefinedCall {
+                    function_identifier,
+                    outputs,
+                }) => {
                     return Ok(RuntimeTaskYield::Return {
                         function_identifier,
                         outputs,
-                    })
+                    });
                 }
 
                 Err(trap) => {
@@ -381,14 +402,17 @@ impl RuntimeTask {
                     destination_slots: destination_slots.clone(),
                 })
             }
-            Instruction::ReturnDefinedCall { function_identifier, outputs } => {
+            Instruction::ReturnDefinedCall {
+                function_identifier,
+                outputs,
+            } => {
                 let outputs = match outputs.iter().map(|slot| self.read(*slot)).collect() {
                     Ok(outputs) => outputs,
                     Err(error) => return Err(error),
                 };
                 Ok(ExecutionResult::ReturnDefinedCall {
                     function_identifier: *function_identifier,
-                    outputs
+                    outputs,
                 })
             }
         }
@@ -716,7 +740,7 @@ impl RuntimeTask {
                         "Argument count Mismatch".to_string(),
                     )));
                 }
-                let vector = PersistentVector::new();
+                let vector = InnerPersistentVector::new();
                 let result = vector.push(args[0].clone());
                 Ok(Value::Vector(result))
             }
@@ -892,16 +916,22 @@ impl RuntimeTask {
                 let identifier = str_!(arguments[1]);
                 let key = (Namespace(namespace), Identifier(identifier));
                 let value = match self.global_memory.try_get(&key) {
-                    TryResult::Present(value) => {
-                        Value::Result(Ok(Box::new(value.value().clone())))
-                    }
+                    TryResult::Present(value) => Value::Result(Ok(Box::new(value.value().clone()))),
                     TryResult::Absent => {
-                        self.log(RuntimeTaskLogLevel::Debug, "read to global memory empty space".to_string());
+                        self.log(
+                            RuntimeTaskLogLevel::Debug,
+                            "read to global memory empty space".to_string(),
+                        );
                         Value::Result(Err(Box::new(Value::String("absent".to_string()))))
                     }
                     TryResult::Locked => {
-                        self.log(RuntimeTaskLogLevel::Warn, "global memory is blocking is try read".to_string());
-                        Value::Result(Err(Box::new(Value::String("global memory is blocking".to_string()))))
+                        self.log(
+                            RuntimeTaskLogLevel::Warn,
+                            "global memory is blocking is try read".to_string(),
+                        );
+                        Value::Result(Err(Box::new(Value::String(
+                            "global memory is blocking".to_string(),
+                        ))))
                     }
                 };
                 Ok(value)
@@ -931,8 +961,13 @@ impl RuntimeTask {
                         Value::Result(Ok(Box::new(Value::Void)))
                     }
                     None => {
-                        self.log(RuntimeTaskLogLevel::Warn, "global memory is blocking is try write".to_string());
-                        Value::Result(Err(Box::new(Value::String("global memory is blocking".to_string()))))
+                        self.log(
+                            RuntimeTaskLogLevel::Warn,
+                            "global memory is blocking is try write".to_string(),
+                        );
+                        Value::Result(Err(Box::new(Value::String(
+                            "global memory is blocking".to_string(),
+                        ))))
                     }
                 };
                 Ok(value)

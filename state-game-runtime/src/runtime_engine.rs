@@ -1,6 +1,4 @@
-struct RuntimeEngine {
-
-}
+struct RuntimeEngine {}
 
 impl RuntimeEngine {
     fn new() -> Self {

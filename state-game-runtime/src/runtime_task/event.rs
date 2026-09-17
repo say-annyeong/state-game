@@ -3,6 +3,7 @@ use std::{collections::HashMap, sync::Arc};
 use crate::runtime_task::{
     instruction::{FunctionIdentifier, RuntimeTaskIdentifier, Slot},
 };
+use crate::runtime_task::types::RuntimeValue;
 
 pub struct RuntimeTaskEvent {
     pub virtual_machine_identifier: RuntimeTaskIdentifier,
@@ -64,23 +65,23 @@ pub enum TrapReason {
 
 pub struct StateChange {
     pub identifier: String,
-    pub old: Option<Arc<Value>>,
-    pub new: Option<Arc<Value>>,
+    pub old: Option<Arc<RuntimeValue>>,
+    pub new: Option<Arc<RuntimeValue>>,
 }
 
 pub struct RuntimeTaskCallEvent {
     pub self_identifier: FunctionIdentifier,
     pub function_identifier: FunctionIdentifier,
-    pub input: HashMap<Slot, Arc<Value>>,
-    pub output: HashMap<Slot, Arc<Value>>,
+    pub input: HashMap<Slot, Arc<RuntimeValue>>,
+    pub output: HashMap<Slot, Arc<RuntimeValue>>,
 }
 
 impl RuntimeTaskCallEvent {
     pub fn new(
         self_identifier: FunctionIdentifier,
         function_identifier: FunctionIdentifier,
-        input: HashMap<Slot, Arc<Value>>,
-        output: HashMap<Slot, Arc<Value>>,
+        input: HashMap<Slot, Arc<RuntimeValue>>,
+        output: HashMap<Slot, Arc<RuntimeValue>>,
     ) -> Self {
         Self {
             self_identifier,
@@ -94,7 +95,7 @@ impl RuntimeTaskCallEvent {
 pub enum RuntimeTaskYield {
     Call {
         function_identifier: FunctionIdentifier,
-        inputs: HashMap<Slot, Arc<Value>>,
+        inputs: HashMap<Slot, Arc<RuntimeValue>>,
         destination_slots: Vec<Slot>,
     },
 
@@ -102,6 +103,6 @@ pub enum RuntimeTaskYield {
 
     Return {
         function_identifier: FunctionIdentifier,
-        outputs: Vec<Arc<Value>>,
+        outputs: Vec<Arc<RuntimeValue>>,
     },
 }

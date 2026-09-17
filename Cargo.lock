@@ -570,6 +570,7 @@ version = "0.1.0"
 name = "state-game-runtime"
 version = "0.1.0"
 dependencies = [
+ "bumpalo",
  "criterion",
  "crossbeam-channel",
  "dashmap",

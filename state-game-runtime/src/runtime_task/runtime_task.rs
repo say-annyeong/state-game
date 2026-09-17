@@ -1,5 +1,6 @@
 use std::{collections::HashMap, ops::Deref, sync::Arc};
-
+use std::num::{ParseFloatError, ParseIntError};
+use std::str::ParseBoolError;
 use crossbeam_channel::{Receiver, Sender};
 use dashmap::{DashMap, Entry, try_result::TryResult};
 
@@ -18,6 +19,8 @@ use crate::{
         },
     },
 };
+use crate::runtime_task::instruction::ConcreteInstruction;
+use crate::runtime_task::types::{PrimitiveType, RuntimeValue};
 
 // ── Instruction pointer step ─────────────────────────────────────────────────
 
@@ -29,13 +32,13 @@ enum ExecutionResult {
 
     YieldCall {
         function_identifier: FunctionIdentifier,
-        inputs: HashMap<Slot, Arc<Value>>,
+        inputs: HashMap<Slot, Arc<RuntimeValue>>,
         destination_slots: Vec<Slot>,
     },
 
     ReturnDefinedCall {
         function_identifier: FunctionIdentifier,
-        outputs: Vec<Arc<Value>>,
+        outputs: Vec<Arc<RuntimeValue>>,
     },
 }
 
@@ -56,17 +59,38 @@ enum ExecutionResult {
 /// be enforced by the scheduler or caller. Race conditions or incorrect
 /// execution order caused by missing dependencies are considered caller
 /// errors rather than RuntimeTask implementation errors.
-pub struct RuntimeTask {
+///
+/// The RuntimeTask assumes that every instruction it receives has already
+/// been fully type-checked and validated by the Verifier. It therefore
+/// trusts that each instruction is well-formed and that all types involved
+/// during execution are consistent with the verified program. The
+/// RuntimeTask does not perform runtime type validation of instructions,
+/// their type relationships, or Slot assignments.
+///
+/// The Verifier is responsible for determining the Slot layout and the
+/// number of Slots required by the program. The RuntimeTask initializes
+/// all Slots before execution and subsequently only reads from or replaces
+/// their values. A Slot has a fixed type determined by the verified
+/// program, while the value stored in a Slot may change during execution.
+///
+/// Any undefined behavior resulting from the Verifier failing to validate
+/// an instruction correctly, accepting an invalid type, providing
+/// inconsistent type information, or producing an invalid Slot layout is
+/// outside the responsibility of the RuntimeTask.
+///
+/// All Slot indices must be contiguous. Using non-contiguous Slot indices
+/// results in undefined behavior.
+pub struct RuntimeTask<'a> {
     pub logger_sender: Sender<RuntimeTaskEvent>,
     pub scheduler_sender: Sender<RuntimeTaskCallEvent>,
     pub scheduler_receiver: Receiver<RuntimeTaskCallEvent>,
     pub virtual_machine_identifier: RuntimeTaskIdentifier,
     pub instruction_pointer: usize,
-    pub instructions: Arc<[Instruction]>,
-    pub input_slots: Vec<(Slot, Arc<Value>)>,
-    pub output_slots: Vec<(Slot, Arc<Value>)>,
-    pub slots: Vec<Arc<Value>>,
-    pub global_memory: Arc<DashMap<(Namespace, Identifier), Value>>,
+    pub instructions: Arc<[ConcreteInstruction<'a>]>,
+    pub input_slots: Vec<Arc<RuntimeValue>>,
+    pub output_slots: Vec<Arc<RuntimeValue>>,
+    pub slots: Vec<Arc<RuntimeValue>>,
+    pub global_memory: Arc<DashMap<(Namespace, Identifier), RuntimeValue>>,
     pub modification_namespace_list: Arc<[Namespace]>,
 }
 
@@ -98,15 +122,16 @@ impl TypeInterner {
 }
  */
 
-impl RuntimeTask {
+impl<'a> RuntimeTask<'a> {
     pub fn new(
         logger_sender: Sender<RuntimeTaskEvent>,
         scheduler_sender: Sender<RuntimeTaskCallEvent>,
         scheduler_receiver: Receiver<RuntimeTaskCallEvent>,
         self_identifier: RuntimeTaskIdentifier,
-        instructions: Arc<[Instruction]>,
-        global_memory: Arc<DashMap<(Namespace, Identifier), Value>>,
+        instructions: Arc<[ConcreteInstruction<'a>]>,
+        global_memory: Arc<DashMap<(Namespace, Identifier), RuntimeValue>>,
         modification_namespace_list: Arc<[Namespace]>,
+        slots_size: usize,
     ) -> Self {
         Self::with_instruction_pointer(
             logger_sender,
@@ -117,6 +142,7 @@ impl RuntimeTask {
             0,
             global_memory,
             modification_namespace_list,
+            slots_size,
         )
     }
 
@@ -125,10 +151,11 @@ impl RuntimeTask {
         scheduler_sender: Sender<RuntimeTaskCallEvent>,
         scheduler_receiver: Receiver<RuntimeTaskCallEvent>,
         virtual_machine_identifier: RuntimeTaskIdentifier,
-        instructions: Arc<[Instruction]>,
+        instructions: Arc<[ConcreteInstruction<'a>]>,
         instruction_pointer: usize,
-        global_memory: Arc<DashMap<(Namespace, Identifier), Value>>,
+        global_memory: Arc<DashMap<(Namespace, Identifier), RuntimeValue>>,
         modification_namespace_list: Arc<[Namespace]>,
+        slots_size: usize,
     ) -> Self {
         Self {
             logger_sender,
@@ -137,7 +164,7 @@ impl RuntimeTask {
             virtual_machine_identifier,
             instruction_pointer,
             instructions,
-            slots: Vec::new(),
+            slots: vec![Arc::new(RuntimeValue::Uninitialized); slots_size],
             global_memory,
             modification_namespace_list,
             input_slots: Vec::new(),
@@ -151,8 +178,9 @@ impl RuntimeTask {
         scheduler_receiver: Receiver<RuntimeTaskCallEvent>,
         virtual_machine_identifier: RuntimeTaskIdentifier,
         instruction_pointer: usize,
-        instructions: Arc<[Instruction]>,
-        input_slots: Vec<(Slot, Arc<Value>)>,
+        instructions: Arc<[ConcreteInstruction<'a>]>,
+        input_slots: Vec<Arc<RuntimeValue>>,
+        slots_size: usize,
     ) -> Self {
         Self {
             logger_sender: self.logger_sender.clone(),
@@ -161,7 +189,7 @@ impl RuntimeTask {
             virtual_machine_identifier,
             instruction_pointer,
             instructions,
-            slots: Vec::new(),
+            slots: vec![Arc::new(RuntimeValue::Uninitialized); slots_size],
             global_memory: self.global_memory.clone(),
             modification_namespace_list: self.modification_namespace_list.clone(),
             input_slots,
@@ -205,21 +233,34 @@ impl RuntimeTask {
 
     /// Read a slot. Returns `Err(VerifierBug)` if the slot was never written —
     /// this indicates the instruction stream was not verified before execution.
-    fn read(&self, slot: Slot) -> Result<Arc<Value>, RuntimeTaskTrap> {
+    fn read(&self, slot: Slot) -> Result<Arc<RuntimeValue>, RuntimeTaskTrap> {
         self.slots
             .get(slot as usize)
             .cloned()
             .ok_or_else(|| self.trap(TrapReason::VerifierBug("Unbound Slot".to_string())))
     }
 
-    fn write(&mut self, slot: Slot, value: Arc<Value>) {
-        let old = self.slots.get(slot as usize).cloned();
-        self.slots.insert(slot as usize, value.clone());
-        self.event_emit(RuntimeTaskEventKind::StateChange(StateChange {
-            identifier: Self::slot_name(slot),
-            old,
-            new: Some(value),
-        }));
+    fn write(&mut self, slot: Slot, value: Arc<RuntimeValue>) {
+        let index = slot as usize;
+
+        if let Some(old) = self.slots.get_mut(index) {
+            let old_value = Some(old.clone());
+            *old = value.clone();
+
+            self.event_emit(RuntimeTaskEventKind::StateChange(StateChange {
+                identifier: Self::slot_name(slot),
+                old: old_value,
+                new: Some(value),
+            }));
+        } else if index == self.slots.len() {
+            self.slots.push(value.clone());
+
+            self.event_emit(RuntimeTaskEventKind::StateChange(StateChange {
+                identifier: Self::slot_name(slot),
+                old: None,
+                new: Some(value),
+            }));
+        }
     }
 
     // ── Main loop ─────────────────────────────────────────────────────────────
@@ -280,7 +321,7 @@ impl RuntimeTask {
 
     pub fn resume_call(
         &mut self,
-        values: HashMap<Slot, Arc<Value>>,
+        values: HashMap<Slot, Arc<RuntimeValue>>,
     ) -> Result<(), RuntimeTaskTrap> {
         for (slot, value) in values {
             self.slots.insert(slot as usize, value);
@@ -293,7 +334,7 @@ impl RuntimeTask {
 
     // ── Instruction dispatch ──────────────────────────────────────────────────
 
-    fn execute(&mut self, instr: &Instruction) -> Result<ExecutionResult, RuntimeTaskTrap> {
+    fn execute(&mut self, instr: &ConcreteInstruction) -> Result<ExecutionResult, RuntimeTaskTrap> {
         match instr {
             // ── Bind ──────────────────────────────────────────────────────────
             Instruction::Bind {
@@ -313,13 +354,14 @@ impl RuntimeTask {
                 function_name,
                 inputs,
                 output,
+                ..
             } => {
                 let args = inputs
                     .iter()
                     .map(|s| self.read(*s))
                     .collect::<Result<Vec<_>, _>>()?;
                 let result = self.dispatch(*function_name, &args)?;
-                self.write(*output, Arc::new(result));
+                self.write(*output, result);
                 Ok(ExecutionResult::Advance)
             }
 
@@ -340,7 +382,7 @@ impl RuntimeTask {
             } => {
                 let v = self.read(*condition)?;
                 let b = match &*v {
-                    Value::Boolean(b) => *b,
+                    RuntimeValue::Boolean(b) => *b,
                     _ => {
                         return Err(self.trap(TrapReason::VerifierBug("Type Mismatch".to_string())));
                     }
@@ -372,6 +414,7 @@ impl RuntimeTask {
                 function_name,
                 inputs,
                 output,
+                ..
             } => {
                 let args = inputs
                     .iter()
@@ -385,7 +428,8 @@ impl RuntimeTask {
             Instruction::DefinedCall {
                 function_identifier,
                 inputs,
-                destination_slots,
+                outputs,
+                ..
             } => {
                 let resolved_inputs = {
                     let mut result = HashMap::new();
@@ -399,7 +443,7 @@ impl RuntimeTask {
                 Ok(ExecutionResult::YieldCall {
                     function_identifier: *function_identifier,
                     inputs: resolved_inputs,
-                    destination_slots: destination_slots.clone(),
+                    destination_slots: outputs.clone(),
                 })
             }
             Instruction::ReturnDefinedCall {
@@ -420,59 +464,7 @@ impl RuntimeTask {
 
     // ── Function dispatch ─────────────────────────────────────────────────────
 
-    fn dispatch(&self, func: Functions, args: &[Arc<Value>]) -> Result<Value, RuntimeTaskTrap> {
-        // Convenience extractors — return VerifierBug trap on wrong variant.
-        macro_rules! int {
-            ($v:expr) => {
-                match &*$v {
-                    Value::Integer(n) => *n,
-                    _ => {
-                        return Err(self.trap(TrapReason::VerifierBug("Type Mismatch".to_string())))
-                    }
-                }
-            };
-        }
-        macro_rules! float {
-            ($v:expr) => {
-                match &*$v {
-                    Value::Float(f) => *f,
-                    _ => {
-                        return Err(self.trap(TrapReason::VerifierBug("Type Mismatch".to_string())))
-                    }
-                }
-            };
-        }
-        macro_rules! bool_ {
-            ($v:expr) => {
-                match &*$v {
-                    Value::Boolean(b) => *b,
-                    _ => {
-                        return Err(self.trap(TrapReason::VerifierBug("Type Mismatch".to_string())))
-                    }
-                }
-            };
-        }
-        macro_rules! str_ {
-            ($v:expr) => {
-                match &*$v {
-                    Value::String(s) => s.clone(),
-                    _ => {
-                        return Err(self.trap(TrapReason::VerifierBug("Type Mismatch".to_string())))
-                    }
-                }
-            };
-        }
-        macro_rules! vec_ {
-            ($v:expr) => {
-                match &*$v {
-                    Value::Vector(v) => v.clone(),
-                    _ => {
-                        return Err(self.trap(TrapReason::VerifierBug("Type Mismatch".to_string())))
-                    }
-                }
-            };
-        }
-
+    fn dispatch(&self, func: Functions, args: &[Arc<RuntimeValue>]) -> Result<Arc<RuntimeValue>, RuntimeTaskTrap> {
         match func {
             // ── Integer arithmetic ────────────────────────────────────────────
             Functions::AddInteger => {
@@ -481,7 +473,7 @@ impl RuntimeTask {
                         "Argument count Mismatch".to_string(),
                     )));
                 }
-                Ok(Value::Integer(int!(args[0]).wrapping_add(int!(args[1]))))
+                Ok(Arc::new(RuntimeValue::Integer(args[0].integer().wrapping_add(*args[1].integer()))))
             }
             Functions::SubInteger => {
                 if args.len() != 2 {
@@ -489,7 +481,7 @@ impl RuntimeTask {
                         "Argument count Mismatch".to_string(),
                     )));
                 }
-                Ok(Value::Integer(int!(args[0]).wrapping_sub(int!(args[1]))))
+                Ok(Arc::new(RuntimeValue::Integer(args[0].integer().wrapping_sub(*args[1].integer()))))
             }
             Functions::MulInteger => {
                 if args.len() != 2 {
@@ -497,7 +489,7 @@ impl RuntimeTask {
                         "Argument count Mismatch".to_string(),
                     )));
                 }
-                Ok(Value::Integer(int!(args[0]).wrapping_mul(int!(args[1]))))
+                Ok(Arc::new(RuntimeValue::Integer(args[0].integer().wrapping_mul(*args[1].integer()))))
             }
             Functions::DivInteger => {
                 if args.len() != 2 {
@@ -505,11 +497,11 @@ impl RuntimeTask {
                         "Argument count Mismatch".to_string(),
                     )));
                 }
-                let rhs = int!(args[1]);
-                if rhs == 0 {
+                let rhs = args[1].integer();
+                if *rhs == 0 {
                     return Err(self.trap(TrapReason::DivisionByZero));
                 }
-                Ok(Value::Integer(int!(args[0]) / rhs))
+                Ok(Arc::new(RuntimeValue::Integer(args[0].integer() / rhs)))
             }
             Functions::ModInteger => {
                 if args.len() != 2 {
@@ -517,11 +509,11 @@ impl RuntimeTask {
                         "Argument count Mismatch".to_string(),
                     )));
                 }
-                let rhs = int!(args[1]);
-                if rhs == 0 {
+                let rhs = args[1].integer();
+                if *rhs == 0 {
                     return Err(self.trap(TrapReason::DivisionByZero));
                 }
-                Ok(Value::Integer(int!(args[0]) % rhs))
+                Ok(Arc::new(RuntimeValue::Integer(args[0].integer() % rhs)))
             }
             Functions::PowInteger => {
                 if args.len() != 2 {
@@ -529,10 +521,10 @@ impl RuntimeTask {
                         "Argument count Mismatch".to_string(),
                     )));
                 }
-                let base = int!(args[0]);
-                let exp = int!(args[1]);
-                let exp_u = u32::try_from(exp).unwrap_or(0);
-                Ok(Value::Integer(base.wrapping_pow(exp_u)))
+                let base = args[0].integer();
+                let exp = args[1].integer();
+                let exp_u = u32::try_from(*exp).unwrap_or(0);
+                Ok(Arc::new(RuntimeValue::Integer(base.wrapping_pow(exp_u))))
             }
 
             // ── Float arithmetic ──────────────────────────────────────────────
@@ -542,7 +534,7 @@ impl RuntimeTask {
                         "Argument count Mismatch".to_string(),
                     )));
                 }
-                Ok(Value::Float(float!(args[0]) + float!(args[1])))
+                Ok(Arc::new(RuntimeValue::Float(args[0].float() + args[1].float())))
             }
             Functions::SubFloat => {
                 if args.len() != 2 {
@@ -550,7 +542,7 @@ impl RuntimeTask {
                         "Argument count Mismatch".to_string(),
                     )));
                 }
-                Ok(Value::Float(float!(args[0]) - float!(args[1])))
+                Ok(Arc::new(RuntimeValue::Float(args[0].float() - args[1].float())))
             }
             Functions::MulFloat => {
                 if args.len() != 2 {
@@ -558,7 +550,7 @@ impl RuntimeTask {
                         "Argument count Mismatch".to_string(),
                     )));
                 }
-                Ok(Value::Float(float!(args[0]) * float!(args[1])))
+                Ok(Arc::new(RuntimeValue::Float(args[0].float() * args[1].float())))
             }
             Functions::DivFloat => {
                 if args.len() != 2 {
@@ -566,7 +558,7 @@ impl RuntimeTask {
                         "Argument count Mismatch".to_string(),
                     )));
                 }
-                Ok(Value::Float(float!(args[0]) / float!(args[1])))
+                Ok(Arc::new(RuntimeValue::Float(args[0].float() / args[1].float())))
             }
             Functions::PowFloat => {
                 if args.len() != 2 {
@@ -574,7 +566,7 @@ impl RuntimeTask {
                         "Argument count Mismatch".to_string(),
                     )));
                 }
-                Ok(Value::Float(float!(args[0]).powf(float!(args[1]))))
+                Ok(Arc::new(RuntimeValue::Float(args[0].float().powf(*args[1].float()))))
             }
 
             // ── Integer comparisons ───────────────────────────────────────────
@@ -584,7 +576,7 @@ impl RuntimeTask {
                         "Argument count Mismatch".to_string(),
                     )));
                 }
-                Ok(Value::Boolean(int!(args[0]) == int!(args[1])))
+                Ok(Arc::new(RuntimeValue::Boolean(args[0].integer() == args[1].integer())))
             }
             Functions::NotEqualInteger => {
                 if args.len() != 2 {
@@ -592,7 +584,7 @@ impl RuntimeTask {
                         "Argument count Mismatch".to_string(),
                     )));
                 }
-                Ok(Value::Boolean(int!(args[0]) != int!(args[1])))
+                Ok(Arc::new(RuntimeValue::Boolean(args[0].integer() != args[1].integer())))
             }
             Functions::GreaterThanInteger => {
                 if args.len() != 2 {
@@ -600,7 +592,7 @@ impl RuntimeTask {
                         "Argument count Mismatch".to_string(),
                     )));
                 }
-                Ok(Value::Boolean(int!(args[0]) > int!(args[1])))
+                Ok(Arc::new(RuntimeValue::Boolean(args[0].integer() > args[1].integer())))
             }
             Functions::LessThanInteger => {
                 if args.len() != 2 {
@@ -608,7 +600,7 @@ impl RuntimeTask {
                         "Argument count Mismatch".to_string(),
                     )));
                 }
-                Ok(Value::Boolean(int!(args[0]) < int!(args[1])))
+                Ok(Arc::new(RuntimeValue::Boolean(args[0].integer() < args[1].integer())))
             }
 
             // ── Float comparisons ─────────────────────────────────────────────
@@ -618,7 +610,7 @@ impl RuntimeTask {
                         "Argument count Mismatch".to_string(),
                     )));
                 }
-                Ok(Value::Boolean(float!(args[0]) > float!(args[1])))
+                Ok(Arc::new(RuntimeValue::Boolean(args[0].float() > args[1].float())))
             }
             Functions::LessThanFloat => {
                 if args.len() != 2 {
@@ -626,7 +618,7 @@ impl RuntimeTask {
                         "Argument count Mismatch".to_string(),
                     )));
                 }
-                Ok(Value::Boolean(float!(args[0]) < float!(args[1])))
+                Ok(Arc::new(RuntimeValue::Boolean(args[0].float() < args[1].float())))
             }
 
             // ── Boolean logic ─────────────────────────────────────────────────
@@ -636,7 +628,7 @@ impl RuntimeTask {
                         "Argument count Mismatch".to_string(),
                     )));
                 }
-                Ok(Value::Boolean(!bool_!(args[0])))
+                Ok(Arc::new(RuntimeValue::Boolean(!args[0].boolean())))
             }
             Functions::And => {
                 if args.len() != 2 {
@@ -644,7 +636,7 @@ impl RuntimeTask {
                         "Argument count Mismatch".to_string(),
                     )));
                 }
-                Ok(Value::Boolean(bool_!(args[0]) && bool_!(args[1])))
+                Ok(Arc::new(RuntimeValue::Boolean(*args[0].boolean() && *args[1].boolean())))
             }
             Functions::Or => {
                 if args.len() != 2 {
@@ -652,7 +644,7 @@ impl RuntimeTask {
                         "Argument count Mismatch".to_string(),
                     )));
                 }
-                Ok(Value::Boolean(bool_!(args[0]) || bool_!(args[1])))
+                Ok(Arc::new(RuntimeValue::Boolean(*args[0].boolean() || *args[1].boolean())))
             }
             Functions::Xor => {
                 if args.len() != 2 {
@@ -660,7 +652,7 @@ impl RuntimeTask {
                         "Argument count Mismatch".to_string(),
                     )));
                 }
-                Ok(Value::Boolean(bool_!(args[0]) ^ bool_!(args[1])))
+                Ok(Arc::new(RuntimeValue::Boolean(*args[0].boolean() ^ *args[1].boolean())))
             }
 
             // ── String operations ─────────────────────────────────────────────
@@ -670,7 +662,7 @@ impl RuntimeTask {
                         "Argument count Mismatch".to_string(),
                     )));
                 }
-                Ok(Value::Boolean(str_!(args[0]) == str_!(args[1])))
+                Ok(Arc::new(RuntimeValue::Boolean(args[0].string() == args[1].string())))
             }
             Functions::StringLength => {
                 if args.len() != 1 {
@@ -678,7 +670,7 @@ impl RuntimeTask {
                         "Argument count Mismatch".to_string(),
                     )));
                 }
-                Ok(Value::Integer(str_!(args[0]).chars().count() as i64))
+                Ok(Arc::new(RuntimeValue::Integer(args[0].string().chars().count() as i64)))
             }
             Functions::StringGetChar => {
                 if args.len() != 2 {
@@ -686,55 +678,47 @@ impl RuntimeTask {
                         "Argument count Mismatch".to_string(),
                     )));
                 }
-                let s = str_!(args[0]);
-                let idx = int!(args[1]);
+                let s = args[0].string();
+                let idx = args[1].integer();
                 let chars: Vec<char> = s.chars().collect();
                 let len = chars.len();
-                let i = usize::try_from(idx)
+                let i = usize::try_from(*idx)
                     .ok()
                     .filter(|&i| i < len)
                     .ok_or_else(|| {
                         self.trap(TrapReason::StringIndexOutOfBounds {
-                            index: idx,
+                            index: *idx,
                             length: len,
                         })
                     })?;
-                Ok(Value::Char(chars[i]))
+                Ok(Arc::new(RuntimeValue::Char(chars[i])))
             }
 
             // ── Vector get ────────────────────────────────────────────────────
-            Functions::VectorGetInteger
-            | Functions::VectorGetFloat
-            | Functions::VectorGetString
-            | Functions::VectorGetChar
-            | Functions::VectorGetBoolean => {
+            Functions::VectorGet => {
                 if args.len() != 2 {
                     return Err(self.trap(TrapReason::VerifierBug(
                         "Argument count Mismatch".to_string(),
                     )));
                 }
-                let v = vec_!(args[0]);
-                let idx = int!(args[1]);
+                let v = args[0].vector();
+                let idx = args[1].integer();
                 let len = v.len();
-                let i = usize::try_from(idx)
+                let i = usize::try_from(*idx)
                     .ok()
                     .filter(|&i| i < len)
                     .ok_or_else(|| {
                         self.trap(TrapReason::IndexOutOfBounds {
-                            index: idx,
+                            index: *idx,
                             length: len,
                         })
                     })?;
-                let boxed = v.get(i).map(|arc| Box::new((*arc).clone()));
-                Ok(Value::Option(boxed))
+                let boxed = v.get(i).map(|arc| Arc::new((*arc).clone()));
+                Ok(Arc::new(RuntimeValue::Option(boxed)))
             }
 
             // ── Vector init ───────────────────────────────────────────────────
-            Functions::VectorInitInteger
-            | Functions::VectorInitFloat
-            | Functions::VectorInitString
-            | Functions::VectorInitChar
-            | Functions::VectorInitBoolean => {
+            Functions::VectorNew => {
                 if args.len() != 1 {
                     return Err(self.trap(TrapReason::VerifierBug(
                         "Argument count Mismatch".to_string(),
@@ -742,37 +726,29 @@ impl RuntimeTask {
                 }
                 let vector = InnerPersistentVector::new();
                 let result = vector.push(args[0].clone());
-                Ok(Value::Vector(result))
+                Ok(Arc::new(RuntimeValue::Vector(result)))
             }
 
             // ── Vector push ───────────────────────────────────────────────────
-            Functions::VectorPushInteger
-            | Functions::VectorPushFloat
-            | Functions::VectorPushString
-            | Functions::VectorPushChar
-            | Functions::VectorPushBoolean => {
+            Functions::VectorPush => {
                 if args.len() != 2 {
                     return Err(self.trap(TrapReason::VerifierBug(
                         "Argument count Mismatch".to_string(),
                     )));
                 }
-                let v = vec_!(args[0]);
+                let v = args[0].vector();
                 let v = v.push((args[1]).clone());
-                Ok(Value::Vector(v))
+                Ok(Arc::new(RuntimeValue::Vector(v)))
             }
 
             // ── Vector pop ────────────────────────────────────────────────────
-            Functions::VectorPopInteger
-            | Functions::VectorPopFloat
-            | Functions::VectorPopString
-            | Functions::VectorPopChar
-            | Functions::VectorPopBoolean => {
+            Functions::VectorPop => {
                 if args.len() != 1 {
                     return Err(self.trap(TrapReason::VerifierBug(
                         "Argument count Mismatch".to_string(),
                     )));
                 }
-                let v = vec_!(args[0]);
+                let v = args[0].vector();
                 if v.is_empty() {
                     return Err(self.trap(TrapReason::IndexOutOfBounds {
                         index: -1,
@@ -780,7 +756,7 @@ impl RuntimeTask {
                     }));
                 }
                 let v = v.pop().unwrap();
-                Ok(Value::Vector(v))
+                Ok(Arc::new(RuntimeValue::Vector(v)))
             }
 
             // ── Option / Result inspection ────────────────────────────────────
@@ -790,7 +766,7 @@ impl RuntimeTask {
                         "Argument count Mismatch".to_string(),
                     )));
                 }
-                Ok(Value::Boolean(matches!(&*args[0], Value::Option(Some(_)))))
+                Ok(Arc::new(RuntimeValue::Boolean(matches!(&*args[0], RuntimeValue::Option(Some(_))))))
             }
             Functions::IsNone => {
                 if args.len() != 1 {
@@ -798,7 +774,7 @@ impl RuntimeTask {
                         "Argument count Mismatch".to_string(),
                     )));
                 }
-                Ok(Value::Boolean(matches!(&*args[0], Value::Option(None))))
+                Ok(Arc::new(RuntimeValue::Boolean(matches!(&*args[0], RuntimeValue::Option(None)))))
             }
             Functions::IsOk => {
                 if args.len() != 1 {
@@ -806,7 +782,7 @@ impl RuntimeTask {
                         "Argument count Mismatch".to_string(),
                     )));
                 }
-                Ok(Value::Boolean(matches!(&*args[0], Value::Result(Ok(_)))))
+                Ok(Arc::new(RuntimeValue::Boolean(matches!(&*args[0], RuntimeValue::Result(Ok(_))))))
             }
             Functions::IsErr => {
                 if args.len() != 1 {
@@ -814,61 +790,73 @@ impl RuntimeTask {
                         "Argument count Mismatch".to_string(),
                     )));
                 }
-                Ok(Value::Boolean(matches!(&*args[0], Value::Result(Err(_)))))
+                Ok(Arc::new(RuntimeValue::Boolean(matches!(&*args[0], RuntimeValue::Result(Err(_))))))
             }
 
             // ── UnwrapSome ────────────────────────────────────────────────────
-            Functions::UnwrapSomeInteger
-            | Functions::UnwrapSomeFloat
-            | Functions::UnwrapSomeString
-            | Functions::UnwrapSomeChar
-            | Functions::UnwrapSomeBoolean => {
+            Functions::UnwrapSome => {
                 if args.len() != 1 {
                     return Err(self.trap(TrapReason::VerifierBug(
                         "Argument count Mismatch".to_string(),
                     )));
                 }
                 match &*args[0] {
-                    Value::Option(Some(inner)) => Ok(*inner.clone()),
-                    Value::Option(None) => Err(self.trap(TrapReason::UnwrapNone)),
+                    RuntimeValue::Option(Some(inner)) => Ok(inner.clone()),
+                    RuntimeValue::Option(None) => Err(self.trap(TrapReason::UnwrapNone)),
                     _ => Err(self.trap(TrapReason::VerifierBug("Type Mismatch".to_string()))),
                 }
             }
 
             // ── UnwrapOk ──────────────────────────────────────────────────────
-            Functions::UnwrapOkInteger
-            | Functions::UnwrapOkFloat
-            | Functions::UnwrapOkString
-            | Functions::UnwrapOkChar
-            | Functions::UnwrapOkBoolean => {
+            Functions::UnwrapOk => {
                 if args.len() != 1 {
                     return Err(self.trap(TrapReason::VerifierBug(
                         "Argument count Mismatch".to_string(),
                     )));
                 }
                 match &*args[0] {
-                    Value::Result(Ok(inner)) => Ok(*inner.clone()),
-                    Value::Result(Err(_)) => Err(self.trap(TrapReason::UnwrapErrOnOk)),
+                    RuntimeValue::Result(Ok(inner)) => Ok(inner.clone()),
+                    RuntimeValue::Result(Err(_)) => Err(self.trap(TrapReason::UnwrapErrOnOk)),
                     _ => Err(self.trap(TrapReason::VerifierBug("Type Mismatch".to_string()))),
                 }
             }
 
             // ── UnwrapErr ─────────────────────────────────────────────────────
-            Functions::UnwrapErrInteger
-            | Functions::UnwrapErrFloat
-            | Functions::UnwrapErrString
-            | Functions::UnwrapErrChar
-            | Functions::UnwrapErrBoolean => {
+            Functions::UnwrapErr => {
                 if args.len() != 1 {
                     return Err(self.trap(TrapReason::VerifierBug(
                         "Argument count Mismatch".to_string(),
                     )));
                 }
                 match &*args[0] {
-                    Value::Result(Err(inner)) => Ok(*inner.clone()),
-                    Value::Result(Ok(_)) => Err(self.trap(TrapReason::UnwrapOkOnErr)),
+                    RuntimeValue::Result(Err(inner)) => Ok(inner.clone()),
+                    RuntimeValue::Result(Ok(_)) => Err(self.trap(TrapReason::UnwrapOkOnErr)),
                     _ => Err(self.trap(TrapReason::VerifierBug("Type Mismatch".to_string()))),
                 }
+            }
+            Functions::StringCombine => {
+                let string1 = args[0].string();
+                let string2 = args[1].string();
+                let result: String = string1.chars().chain(string2.chars()).collect();
+                Ok(Arc::new(RuntimeValue::String(Arc::from(result))))
+            }
+            Functions::StringToInteger => {
+                let string = args[0].string();
+                let parse: Result<i64, String> = string.parse().map_err(|error: ParseIntError| error.to_string());
+                let result = parse.map(|value| Arc::new(RuntimeValue::Integer(value))).map_err(|error| Arc::new(RuntimeValue::String(Arc::from(error))));
+                Ok(Arc::new(RuntimeValue::Result(result)))
+            }
+            Functions::StringToFloat => {
+                let string = args[0].string();
+                let parse: Result<f64, String> = string.parse().map_err(|error: ParseFloatError| error.to_string());
+                let result = parse.map(|value| Arc::new(RuntimeValue::Float(value))).map_err(|error| Arc::new(RuntimeValue::String(Arc::from(error))));
+                Ok(Arc::new(RuntimeValue::Result(result)))
+            }
+            Functions::StringToBoolean => {
+                let string = args[0].string();
+                let parse: Result<bool, String> = string.parse().map_err(|error: ParseBoolError| error.to_string());
+                let result = parse.map(|value| Arc::new(RuntimeValue::Boolean(value))).map_err(|error| Arc::new(RuntimeValue::String(Arc::from(error))));
+                Ok(Arc::new(RuntimeValue::Result(result)))
             }
         }
     }
@@ -878,95 +866,66 @@ impl RuntimeTask {
     fn special_dispatch(
         &mut self,
         special_functions: SpecialFunctions,
-        arguments: &[Arc<Value>],
-    ) -> Result<Value, RuntimeTaskTrap> {
-        macro_rules! int {
-            ($v:expr) => {
-                match &*$v {
-                    Value::Integer(n) => *n,
-                    _ => {
-                        return Err(self.trap(TrapReason::VerifierBug("Type Mismatch".to_string())))
-                    }
-                }
-            };
-        }
-        macro_rules! str_ {
-            ($v:expr) => {
-                match &*$v {
-                    Value::String(s) => s.clone(),
-                    _ => {
-                        return Err(self.trap(TrapReason::VerifierBug("Type Mismatch".to_string())))
-                    }
-                }
-            };
-        }
-
+        arguments: &[Arc<RuntimeValue>],
+    ) -> Result<RuntimeValue, RuntimeTaskTrap> {
         match special_functions {
-            SpecialFunctions::ReadGlobalMemoryInteger
-            | SpecialFunctions::ReadGlobalMemoryFloat
-            | SpecialFunctions::ReadGlobalMemoryString
-            | SpecialFunctions::ReadGlobalMemoryChar
-            | SpecialFunctions::ReadGlobalMemoryBoolean => {
+            SpecialFunctions::ReadGlobalMemory => {
                 if arguments.len() != 2 {
                     return Err(self.trap(TrapReason::VerifierBug(
                         "Argument count Mismatch".to_string(),
                     )));
                 }
-                let namespace = str_!(arguments[0]);
-                let identifier = str_!(arguments[1]);
-                let key = (Namespace(namespace), Identifier(identifier));
+                let namespace = arguments[0].string();
+                let identifier = arguments[1].string();
+                let key = (Namespace(namespace.clone()), Identifier(identifier.clone()));
                 let value = match self.global_memory.try_get(&key) {
-                    TryResult::Present(value) => Value::Result(Ok(Box::new(value.value().clone()))),
+                    TryResult::Present(value) => RuntimeValue::Result(Ok(Arc::new(value.value().clone()))),
                     TryResult::Absent => {
                         self.log(
                             RuntimeTaskLogLevel::Debug,
                             "read to global memory empty space".to_string(),
                         );
-                        Value::Result(Err(Box::new(Value::String("absent".to_string()))))
+                        RuntimeValue::Result(Err(Arc::new(RuntimeValue::String(Arc::from("absent")))))
                     }
                     TryResult::Locked => {
                         self.log(
                             RuntimeTaskLogLevel::Warn,
                             "global memory is blocking is try read".to_string(),
                         );
-                        Value::Result(Err(Box::new(Value::String(
-                            "global memory is blocking".to_string(),
+                        RuntimeValue::Result(Err(Arc::new(RuntimeValue::String(
+                            Arc::from("global memory is blocking"),
                         ))))
                     }
                 };
                 Ok(value)
             }
 
-            SpecialFunctions::WriteGlobalMemoryInteger
-            | SpecialFunctions::WriteGlobalMemoryFloat
-            | SpecialFunctions::WriteGlobalMemoryString
-            | SpecialFunctions::WriteGlobalMemoryChar
-            | SpecialFunctions::WriteGlobalMemoryBoolean => {
+            SpecialFunctions::WriteGlobalMemory => {
                 if arguments.len() != 3 {
                     return Err(self.trap(TrapReason::VerifierBug(
                         "Argument count Mismatch".to_string(),
                     )));
                 }
-                let namespace = str_!(arguments[0]);
-                let identifier = str_!(arguments[1]);
+                let namespace = arguments[0].string();
+                let identifier = arguments[1].string();
                 let input = arguments[2].clone();
-                let key = (Namespace(namespace), Identifier(identifier));
+                let key = (Namespace(namespace.clone()), Identifier(identifier.clone()));
                 let value = match self.global_memory.try_entry(key) {
                     Some(Entry::Occupied(mut entry)) => {
                         entry.insert(input.deref().clone());
-                        Value::Result(Ok(Box::new(Value::Void)))
+                        RuntimeValue::Result(Ok(Arc::new(RuntimeValue::Unit)))
                     }
                     Some(Entry::Vacant(entry)) => {
                         entry.insert(input.deref().clone());
-                        Value::Result(Ok(Box::new(Value::Void)))
+                        RuntimeValue::Result(Ok(Arc::new(RuntimeValue::Unit)))
                     }
                     None => {
                         self.log(
                             RuntimeTaskLogLevel::Warn,
                             "global memory is blocking is try write".to_string(),
                         );
-                        Value::Result(Err(Box::new(Value::String(
-                            "global memory is blocking".to_string(),
+                        RuntimeValue::Result(Err(Arc::new(RuntimeValue::String(
+                            Arc::from("global memory is blocking"),
                         ))))
                     }
                 };
@@ -974,15 +933,63 @@ impl RuntimeTask {
             }
 
             SpecialFunctions::GetInstructionPosition => {
-                Ok(Value::Integer(self.instruction_pointer as i64))
+                Ok(RuntimeValue::Integer(self.instruction_pointer as i64))
             }
 
-            SpecialFunctions::GetModificationNamespaceList => Ok(Value::Vector(
+            SpecialFunctions::GetModificationNamespaceList => Ok(RuntimeValue::Vector(
                 self.modification_namespace_list
                     .iter()
-                    .map(|ns| Value::String(ns.0.clone()))
+                    .map(|ns| RuntimeValue::String(ns.0.clone()))
                     .collect(),
             )),
+            SpecialFunctions::GetInputSlot => {
+                let slot_index = arguments[0].integer();
+                let slot = self.input_slots.get(*slot_index as usize).map(|value| value.clone());
+                Ok(RuntimeValue::Option(slot))
+            }
+            SpecialFunctions::WriteOutputSlot => {
+                let output_slot_index = *arguments[0].integer();
+                let input_slot_index = *arguments[1].integer();
+
+                if output_slot_index < 0 {
+                    return Ok(RuntimeValue::Result(
+                        Err(Arc::new(RuntimeValue::String(
+                            Arc::from("out of index"),
+                        )))
+                    ));
+                }
+
+                let output_slot_index = output_slot_index as usize;
+
+                let value = match self.slots.get(input_slot_index as usize).cloned() {
+                    Some(value) => value,
+                    None => {
+                        return Ok(RuntimeValue::Result(
+                            Err(Arc::new(RuntimeValue::String(
+                                Arc::from("nothing in value"),
+                            )))
+                        ));
+                    }
+                };
+
+                if output_slot_index > self.output_slots.len() {
+                    return Ok(RuntimeValue::Result(
+                        Err(Arc::new(RuntimeValue::String(
+                            Arc::from("out of index"),
+                        )))
+                    ));
+                }
+
+                if output_slot_index == self.output_slots.len() {
+                    self.output_slots.push(value);
+                } else {
+                    self.output_slots[output_slot_index] = value;
+                }
+
+                Ok(RuntimeValue::Result(
+                    Ok(Arc::new(RuntimeValue::Unit))
+                ))
+            }
         }
     }
 }
@@ -991,13 +998,13 @@ impl RuntimeTask {
 
 /// Returns `None` if the literal variant does not match the declared type,
 /// which indicates the instruction stream was not verified before execution.
-fn parse_literal(ty: &Type, lit: &Literal) -> Option<Value> {
+fn parse_literal(ty: &PrimitiveType, lit: &Literal) -> Option<RuntimeValue> {
     match (ty, lit) {
-        (Type::Integer, Literal::Integer(n)) => Some(Value::Integer(*n)),
-        (Type::Float, Literal::Float(f)) => Some(Value::Float(*f)),
-        (Type::String, Literal::String(s)) => Some(Value::String(s.clone())),
-        (Type::Char, Literal::Char(c)) => Some(Value::Char(*c)),
-        (Type::Boolean, Literal::Boolean(b)) => Some(Value::Boolean(*b)),
+        (PrimitiveType::Integer, Literal::Integer(n)) => Some(RuntimeValue::Integer(*n)),
+        (PrimitiveType::Float, Literal::Float(f)) => Some(RuntimeValue::Float(*f)),
+        (PrimitiveType::String, Literal::String(s)) => Some(RuntimeValue::String(Arc::from(s.clone()))),
+        (PrimitiveType::Char, Literal::Char(c)) => Some(RuntimeValue::Char(*c)),
+        (PrimitiveType::Boolean, Literal::Boolean(b)) => Some(RuntimeValue::Boolean(*b)),
         _ => None,
     }
 }

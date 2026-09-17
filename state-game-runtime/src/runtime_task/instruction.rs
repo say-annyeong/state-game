@@ -7,8 +7,11 @@ pub type Slot = u64;
 pub type FunctionIdentifier = u64;
 pub type RuntimeTaskIdentifier = u64;
 
+pub type ConcreteInstruction<'a> = Instruction<ConcreteType<'a>>;
+pub type ExpressionInstruction<'a> = Instruction<TypeExpression<'a>>;
+
 #[derive(Clone, Debug, PartialEq)]
-pub enum Instruction<'a> {
+pub enum Instruction<Type> {
     Bind {
         slot: Slot,
         type_name: PrimitiveType,
@@ -17,7 +20,7 @@ pub enum Instruction<'a> {
 
     Call {
         function_name: Functions,
-        generic_arguments: Box<[ConcreteType<'a>]>,
+        generic_arguments: Box<[Type]>,
         inputs: Vec<Slot>,
         /// The output must undergo the same type checking as Bind.
         /// Execution will fail if there is a type mismatch.
@@ -26,7 +29,7 @@ pub enum Instruction<'a> {
 
     SpecialCall {
         function_name: SpecialFunctions,
-        generic_arguments: Box<[ConcreteType<'a>]>,
+        generic_arguments: Box<[Type]>,
         inputs: Vec<Slot>,
         /// The output must undergo the same type checking as Bind.
         /// Execution will fail if there is a type mismatch.
@@ -35,7 +38,7 @@ pub enum Instruction<'a> {
 
     DefinedCall {
         function_identifier: FunctionIdentifier,
-        generic_arguments: Box<[ConcreteType<'a>]>,
+        generic_arguments: Box<[Type]>,
         inputs: Vec<Slot>, // input
         outputs: Vec<Slot>,
     },
@@ -342,7 +345,10 @@ define_function_registry!(
             constraints: &[],
         }],
         inputs: &[TypeExpression::Primitive(PrimitiveType::String), TypeExpression::Primitive(PrimitiveType::String), TypeExpression::Generic(GenericIdentifier(0))], // namespace, identifier, value
-        output: TypeExpression::Primitive(PrimitiveType::Boolean)
+        output: TypeExpression::Result {
+            ok: &TypeExpression::Primitive(PrimitiveType::Unit),
+            err: &TypeExpression::Primitive(PrimitiveType::String)
+        }
     },
     GetInstructionPosition => {
         generics: &[],
@@ -370,7 +376,10 @@ define_function_registry!(
             constraints: &[],
         }],
         inputs: &[TypeExpression::Primitive(PrimitiveType::Integer), TypeExpression::Generic(GenericIdentifier(0))], // index, value
-        output: TypeExpression::Primitive(PrimitiveType::Boolean)
+        output: TypeExpression::Result {
+            ok: &TypeExpression::Primitive(PrimitiveType::Unit),
+            err: &TypeExpression::Primitive(PrimitiveType::String)
+        }
     }
 );
 

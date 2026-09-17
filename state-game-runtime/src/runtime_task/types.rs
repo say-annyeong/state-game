@@ -1,8 +1,12 @@
 use std::sync::Arc;
+
+use bumpalo::Bump;
+
 use crate::persistent_vector::PersistentVector;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum PrimitiveType {
+    Unit,
     Integer,
     Float,
     String,
@@ -14,7 +18,7 @@ pub enum PrimitiveType {
 pub struct GenericIdentifier(pub u64);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct TypeId(pub u32);
+pub struct TypeIdentifier(pub u32);
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum TypeExpression<'a> {
@@ -23,13 +27,8 @@ pub enum TypeExpression<'a> {
     Generic(GenericIdentifier),
 
     Vector(&'a Self),
-
     Option(&'a Self),
-
-    Result {
-        ok: &'a Self,
-        err: &'a Self,
-    },
+    Result { ok: &'a Self, err: &'a Self },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -60,8 +59,41 @@ pub enum ConcreteType<'a> {
     Result { ok: &'a Self, err: &'a Self },
 }
 
+pub fn convert<'a>(
+    value: &ConcreteType<'a>,
+    arena: &'a Bump,
+) -> &'a TypeExpression<'a> {
+    match value {
+        ConcreteType::Primitive(p) => {
+            arena.alloc(TypeExpression::Primitive(*p))
+        }
+
+        ConcreteType::Vector(inner) => {
+            let child = convert(inner, arena);
+
+            arena.alloc(TypeExpression::Vector(child))
+        }
+
+        ConcreteType::Option(inner) => {
+            let child = convert(inner, arena);
+
+            arena.alloc(TypeExpression::Option(child))
+        }
+
+        ConcreteType::Result { ok, err } => {
+            let ok = convert(ok, arena);
+            let err = convert(err, arena);
+
+            arena.alloc(TypeExpression::Result { ok, err })
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub enum RuntimeValue {
+    Uninitialized,
+
+    Unit,
     Integer(i64),
     Float(f64),
     Boolean(bool),

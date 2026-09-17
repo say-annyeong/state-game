@@ -6,15 +6,16 @@ mod bound;
 pub mod helper;
 mod mod_metadata;
 
+use std::sync::Arc;
 use serde_json::Value;
 
 pub trait State: Send + Sync {}
 
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
-pub struct Identifier(pub String);
+pub struct Identifier(pub Arc<str>);
 
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
-pub struct Namespace(pub String);
+pub struct Namespace(pub Arc<str>);
 
 // =========================
 // Input Layer

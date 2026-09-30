@@ -1,488 +1,231 @@
-use std::{sync::Arc};
+use std::sync::Arc;
 
-use crate::{
-    runtime_task::{
-        types::{
-            ConcreteType,
-            PrimitiveType,
-            TypeExpression
-        },
-        instruction::{
-            FUNCTION_REGISTRY,
-            FunctionIdentifier,
-            Functions,
-            Instruction,
-            Literal,
-            SPECIAL_FUNCTIONS_REGISTRY,
-            Slot,
-            SpecialFunctions,
-            ConcreteInstruction
-        }
+use crate::runtime_task::{
+    instruction::{
+        ConcreteInstruction, FunctionIdentifier, Instruction, Literal,
+        SPECIAL_FUNCTIONS_REGISTRY, FUNCTION_REGISTRY, Slot,
     },
-    runtime_task::verifier::virtual_machine_instruction_metadata::{ConcreteFunctionMetadata}
+    types::{ConcreteType, PrimitiveType, TypeExpression},
+    verifier::virtual_machine_instruction_metadata::ConcreteFunctionMetadata,
 };
 
 #[derive(Debug, PartialEq, Eq, Clone)]
 pub enum VerifyError<'a> {
-    /// A slot was read before it was assigned.
-    UnboundSlot {
-        instruction_pointer: usize,
-        slot: Slot,
-    },
-    /// The type of a slot did not match what was expected.
+    UnboundSlot { instruction_pointer: usize, slot: Slot },
+    SlotOutOfBounds { instruction_pointer: usize, slot: Slot, slot_count: usize },
     TypeMismatch {
         instruction_pointer: usize,
         slot: Slot,
-        expected: TypeExpression<'a>,
+        expected: ConcreteType<'a>,
         found: ConcreteType<'a>,
     },
-    /// The literal value in a Bind cannot be parsed as the declared type.
-    InvalidLiteral {
+    SignatureTypeMismatch {
         instruction_pointer: usize,
         slot: Slot,
+        expected: TypeExpression<'static>,
+        found: ConcreteType<'a>,
     },
-    /// A Jump or ConditionalJump target is outside the instruction list.
-    JumpOutOfBounds {
-        instruction_pointer: usize,
-        target: usize,
-    },
-    /// The wrong number of arguments was supplied to a Call.
-    ArgumentCountMismatch {
-        instruction_pointer: usize,
-        expected: usize,
-        found: usize,
-    },
-    CanNotFoundDefinedFunction {
-        instruction_pointer: usize,
-        function_identifier: FunctionIdentifier,
-    },
-    DefinedFunctionArgumentCountMismatch {
-        instruction_pointer: usize,
-        expected: usize,
-        found: usize,
-    },
-    DefinedFunctionReturnCountMismatch {
-        instruction_pointer: usize,
-        expected: usize,
-        found: usize,
-    },
+    InvalidLiteral { instruction_pointer: usize, slot: Slot },
+    JumpOutOfBounds { instruction_pointer: usize, target: usize },
+    ArgumentCountMismatch { instruction_pointer: usize, expected: usize, found: usize },
+    GenericArgumentCountMismatch { instruction_pointer: usize, expected: usize, found: usize },
+    CanNotFoundDefinedFunction { instruction_pointer: usize, function_identifier: FunctionIdentifier },
+    DefinedFunctionArgumentCountMismatch { instruction_pointer: usize, expected: usize, found: usize },
+    DefinedFunctionReturnCountMismatch { instruction_pointer: usize, expected: usize, found: usize },
 }
 
 pub struct InstructionVerifier<'a> {
-    function_instruction: Arc<[(ConcreteFunctionMetadata<'a>, Arc<[ConcreteInstruction<'a>]>)]>,
+    functions: Arc<[(ConcreteFunctionMetadata<'a>, Arc<[ConcreteInstruction<'a>]>) ]>,
 }
 
 impl<'a> InstructionVerifier<'a> {
-    pub fn new(
-        function_instruction: Arc<[(ConcreteFunctionMetadata<'a>, Arc<[ConcreteInstruction<'a>]>)]>,
-    ) -> Self {
-        Self {
-            function_instruction,
-        }
+    pub fn new(functions: Arc<[(ConcreteFunctionMetadata<'a>, Arc<[ConcreteInstruction<'a>]>) ]>) -> Self {
+        Self { functions }
     }
 
-    /// Verifies the instruction stream and returns all errors found.
-    /// An empty Vec means the program is well-typed.
-    pub fn verify(&self) -> Vec<VerifyError> {
-        let instructions = &self.function_instruction;
-        let len = instructions.len();
+    /// Checks every function body against its concrete metadata and returns all errors.
+    pub fn verify(&self) -> Vec<VerifyError<'a>> {
         let mut errors = Vec::new();
-        let mut types = Vec::new();
-
-        for (concrete_function_metadata,  instructions) in instructions.iter() {
-            for (instruction_pointer, instruction) in instructions.iter().enumerate() {
-                match instruction {
-                    Instruction::Bind {
-                        slot,
-                        type_name,
-                        value,
-                    } => {
-                        Self::verify_bind(
-                            instruction_pointer,
-                            *slot,
-                            *type_name,
-                            value,
-                            &mut errors,
-                            &mut types,
-                        );
-                    }
-                    Instruction::Call {
-                        function_name,
-                        generic_arguments,
-                        inputs,
-                        output,
-                    } => {
-                        Self::verify_call(
-                            instruction_pointer,
-                            *function_name,
-                            generic_arguments,
-                            inputs,
-                            *output,
-                            &mut errors,
-                            &mut types,
-                        );
-                    }
-                    Instruction::SpecialCall {
-                        function_name,
-                        generic_arguments,
-                        inputs,
-                        output,
-                    } => {
-                        Self::verify_special_call(
-                            instruction_pointer,
-                            *function_name,
-                            generic_arguments,
-                            inputs,
-                            *output,
-                            &mut errors,
-                            &mut types,
-                        );
-                    }
-                    Instruction::DefinedCall {
-                        function_identifier,
-                        generic_arguments,
-                        inputs,
-                        outputs,
-                    } => {
-                        self.verify_defined_call(
-                            instruction_pointer,
-                            function_identifier,
-                            generic_arguments,
-                            inputs,
-                            outputs,
-                            &mut errors,
-                            &mut types,
-                        );
-                    }
-                    Instruction::Jump { target_position } => {
-                        if *target_position >= len {
-                            errors.push(VerifyError::JumpOutOfBounds {
-                                instruction_pointer,
-                                target: *target_position,
-                            });
-                        }
-                    }
-                    Instruction::ConditionalJump {
-                        condition,
-                        true_target_position,
-                        false_target_position,
-                    } => {
-                        match types.get(*condition as usize) {
-                            None => errors.push(VerifyError::UnboundSlot {
-                                instruction_pointer,
-                                slot: *condition,
-                            }),
-                            Some(t) if *t != ConcreteType::Primitive(PrimitiveType::Boolean) => {
-                                errors.push(VerifyError::TypeMismatch {
-                                    instruction_pointer,
-                                    slot: *condition,
-                                    expected: TypeExpression::Primitive(PrimitiveType::Boolean),
-                                    found: t.clone(),
-                                });
-                            }
-                            _ => {}
-                        }
-                        if *true_target_position >= len {
-                            errors.push(VerifyError::JumpOutOfBounds {
-                                instruction_pointer,
-                                target: *true_target_position,
-                            });
-                        }
-                        if *false_target_position >= len {
-                            errors.push(VerifyError::JumpOutOfBounds {
-                                instruction_pointer,
-                                target: *false_target_position,
-                            });
-                        }
-                    }
-                    Instruction::ReturnDefinedCall {
-                        function_identifier,
-                        outputs,
-                    } => {
-                        self.verify_return_defined_call(
-                            instruction_pointer,
-                            function_identifier,
-                            outputs,
-                            &mut errors,
-                            &mut types,
-                        );
-                    }
-                }
-            }
+        for (metadata, instructions) in self.functions.iter() {
+            self.verify_function(metadata, instructions, &mut errors);
         }
-
         errors
     }
 
-    fn verify_bind<'b>(
-        instruction_pointer: usize,
-        slot: Slot,
-        primitive_type: PrimitiveType,
-        value: &Literal,
-        errors: &mut Vec<VerifyError<'b>>,
-        types: &mut Vec<ConcreteType<'b>>,
-    ) {
-        if !literal_matches_type(value, &primitive_type) {
-            errors.push(VerifyError::InvalidLiteral {
-                instruction_pointer,
-                slot,
-            });
-        }
-        bind_slot(
-            types,
-            errors,
-            instruction_pointer,
-            slot,
-            ConcreteType::Primitive(primitive_type),
-        );
-    }
-
-    fn verify_call<'b>(
-        instruction_pointer: usize,
-        function_name: Functions,
-        generic_arguments: &Box<[ConcreteType]>,
-        inputs: &Vec<Slot>,
-        output: Slot,
-        errors: &mut Vec<VerifyError<'b>>,
-        types: &mut Vec<ConcreteType<'b>>,
-    ) {
-        let sig = &FUNCTION_REGISTRY.functions[function_name as usize];
-
-        // argument count
-        if inputs.len() != sig.inputs.len() {
-            errors.push(VerifyError::ArgumentCountMismatch {
-                instruction_pointer,
-                expected: sig.inputs.len(),
-                found: inputs.len(),
-            });
-        } else {
-            // argument types
-            for (arg_slot, expected_type) in inputs.iter().zip(sig.inputs.iter()) {
-                match types.get(*arg_slot as usize) {
-                    None => errors.push(VerifyError::UnboundSlot {
-                        instruction_pointer,
-                        slot: *arg_slot,
-                    }),
-                    Some(found_type) if !type_compatible(found_type, expected_type) => {
-                        errors.push(VerifyError::TypeMismatch {
-                            instruction_pointer,
-                            slot: *arg_slot,
-                            expected: expected_type.clone(),
-                            found: found_type.clone(),
-                        });
-                    }
-                    _ => {}
-                }
-            }
-        }
-
-        bind_slot(types, errors, instruction_pointer, output, sig.output.clone());
-    }
-
-    fn verify_special_call<'b>(
-        instruction_pointer: usize,
-        function_name: SpecialFunctions,
-        generic_arguments: &Box<[ConcreteType]>,
-        inputs: &Vec<Slot>,
-        output: Slot,
-        errors: &mut Vec<VerifyError<'b>>,
-        types: &mut Vec<ConcreteType<'b>>,
-    ) {
-        let sig = &SPECIAL_FUNCTIONS_REGISTRY.functions[function_name as usize];
-
-        // argument count
-        if inputs.len() != sig.inputs.len() {
-            errors.push(VerifyError::ArgumentCountMismatch {
-                instruction_pointer,
-                expected: sig.inputs.len(),
-                found: inputs.len(),
-            });
-        } else {
-            // argument types
-            for (arg_slot, expected_type) in inputs.iter().zip(sig.inputs.iter()) {
-                match types.get(*arg_slot as usize) {
-                    None => errors.push(VerifyError::UnboundSlot {
-                        instruction_pointer,
-                        slot: *arg_slot,
-                    }),
-                    Some(found_type) if !type_compatible(found_type, expected_type) => {
-                        errors.push(VerifyError::TypeMismatch {
-                            instruction_pointer,
-                            slot: *arg_slot,
-                            expected: expected_type.clone(),
-                            found: found_type.clone(),
-                        });
-                    }
-                    _ => {}
-                }
-            }
-        }
-
-        bind_slot(types, errors, instruction_pointer, output, sig.output.clone());
-    }
-
-    fn verify_defined_call<'b>(
+    fn verify_function(
         &self,
-        instruction_pointer: usize,
-        function_identifier: &FunctionIdentifier,
-        generic_arguments: &Box<[ConcreteType]>,
-        inputs: &Vec<Slot>,
-        outputs: &Vec<Slot>,
-        errors: &mut Vec<VerifyError<'b>>,
-        types: &mut Vec<ConcreteType<'b>>,
+        metadata: &ConcreteFunctionMetadata<'a>,
+        instructions: &[ConcreteInstruction<'a>],
+        errors: &mut Vec<VerifyError<'a>>,
     ) {
-        match self.defined_functions.get(function_identifier) {
-            None => {
-                errors.push(VerifyError::CanNotFoundDefinedFunction {
-                    instruction_pointer,
-                    function_identifier: *function_identifier,
-                });
+        let mut initialized = vec![false; metadata.slot_types.len()];
+        for i in 0..metadata.input_types.len() {
+            match (metadata.slot_types.get(i), initialized.get_mut(i)) {
+                (Some(slot_type), Some(bound)) => {
+                    *bound = true;
+                    if slot_type != &metadata.input_types[i] {
+                        errors.push(VerifyError::TypeMismatch {
+                            instruction_pointer: 0,
+                            slot: i as Slot,
+                            expected: metadata.input_types[i].clone(),
+                            found: slot_type.clone(),
+                        });
+                    }
+                }
+                _ => errors.push(VerifyError::SlotOutOfBounds {
+                    instruction_pointer: 0,
+                    slot: i as Slot,
+                    slot_count: metadata.slot_types.len(),
+                }),
             }
-            Some(sig) => {
-                // ── inputs: slots read by the callee ─────────────
-                if inputs.len() != sig.inputs.len() {
-                    errors.push(VerifyError::DefinedFunctionArgumentCountMismatch {
-                        instruction_pointer,
-                        expected: sig.inputs.len(),
-                        found: inputs.len(),
-                    });
-                } else {
-                    for (slot, expected_type) in inputs.iter().zip(sig.inputs.iter()) {
-                        match types.get(*slot as usize) {
-                            None => errors.push(VerifyError::UnboundSlot {
-                                instruction_pointer,
-                                slot: *slot,
-                            }),
-                            Some(found_type) if !type_compatible(found_type, expected_type) => {
-                                errors.push(VerifyError::TypeMismatch {
-                                    instruction_pointer,
-                                    slot: *slot,
-                                    expected: expected_type.clone(),
-                                    found: found_type.clone(),
-                                });
+        }
+
+        for (ip, instruction) in instructions.iter().enumerate() {
+            match instruction {
+                Instruction::Bind { slot, type_name, value } => {
+                    if !literal_matches_type(value, type_name) {
+                        errors.push(VerifyError::InvalidLiteral { instruction_pointer: ip, slot: *slot });
+                    }
+                    self.write_slot(metadata, &mut initialized, ip, *slot, &ConcreteType::Primitive(*type_name), errors);
+                }
+                Instruction::Call { function_name, generic_arguments, inputs, output } => {
+                    let sig = &FUNCTION_REGISTRY.functions[*function_name as usize];
+                    self.verify_generic_count(ip, sig.generics.len(), generic_arguments.len(), errors);
+                    self.verify_inputs(metadata, &initialized, ip, inputs, sig.inputs, sig.generics, generic_arguments, errors);
+                    if let Some(out_ty) = metadata.slot_types.get(*output as usize) {
+                        if !type_compatible(out_ty, &sig.output, sig.generics, generic_arguments) {
+                            errors.push(VerifyError::SignatureTypeMismatch { instruction_pointer: ip, slot: *output, expected: sig.output.clone(), found: out_ty.clone() });
+                        }
+                        self.write_slot(metadata, &mut initialized, ip, *output, out_ty, errors);
+                    } else { self.bad_slot(metadata, ip, *output, errors); }
+                }
+                Instruction::SpecialCall { function_name, generic_arguments, inputs, output } => {
+                    let sig = &SPECIAL_FUNCTIONS_REGISTRY.functions[*function_name as usize];
+                    self.verify_generic_count(ip, sig.generics.len(), generic_arguments.len(), errors);
+                    self.verify_inputs(metadata, &initialized, ip, inputs, sig.inputs, sig.generics, generic_arguments, errors);
+                    if let Some(out_ty) = metadata.slot_types.get(*output as usize) {
+                        if !type_compatible(out_ty, &sig.output, sig.generics, generic_arguments) {
+                            errors.push(VerifyError::SignatureTypeMismatch { instruction_pointer: ip, slot: *output, expected: sig.output.clone(), found: out_ty.clone() });
+                        }
+                        self.write_slot(metadata, &mut initialized, ip, *output, out_ty, errors);
+                    } else { self.bad_slot(metadata, ip, *output, errors); }
+                }
+                Instruction::DefinedCall { function_identifier, generic_arguments: _, inputs, outputs } => {
+                    match self.find_function(*function_identifier) {
+                        None => errors.push(VerifyError::CanNotFoundDefinedFunction { instruction_pointer: ip, function_identifier: *function_identifier }),
+                        Some((callee, _)) => {
+                            if inputs.len() != callee.input_types.len() {
+                                errors.push(VerifyError::DefinedFunctionArgumentCountMismatch { instruction_pointer: ip, expected: callee.input_types.len(), found: inputs.len() });
+                            } else {
+                                for (slot, expected) in inputs.iter().zip(&callee.input_types) {
+                                    self.read_slot(metadata, &initialized, ip, *slot, expected, errors);
+                                }
                             }
-                            _ => {}
+                            if outputs.len() != callee.output_types.len() {
+                                errors.push(VerifyError::DefinedFunctionReturnCountMismatch { instruction_pointer: ip, expected: callee.output_types.len(), found: outputs.len() });
+                            } else {
+                                for (slot, expected) in outputs.iter().zip(&callee.output_types) {
+                                    self.write_slot(metadata, &mut initialized, ip, *slot, expected, errors);
+                                }
+                            }
                         }
                     }
                 }
-
-                // ── destination_slots: caller slots written with output values ──
-                // Count must match outputs; each slot is bound to the output type.
-                if outputs.len() != sig.outputs.len() {
-                    errors.push(VerifyError::DefinedFunctionReturnCountMismatch {
-                        instruction_pointer,
-                        expected: sig.outputs.len(),
-                        found: outputs.len(),
-                    });
-                } else {
-                    for (slot, output_type) in outputs.iter().zip(sig.outputs.iter()) {
-                        bind_slot(
-                            types,
-                            errors,
-                            instruction_pointer,
-                            *slot,
-                            output_type.clone(),
-                        );
+                Instruction::Jump { target_position } => {
+                    if *target_position >= instructions.len() { errors.push(VerifyError::JumpOutOfBounds { instruction_pointer: ip, target: *target_position }); }
+                }
+                Instruction::ConditionalJump { condition, true_target_position, false_target_position } => {
+                    self.read_slot(metadata, &initialized, ip, *condition, &ConcreteType::Primitive(PrimitiveType::Boolean), errors);
+                    for target in [true_target_position, false_target_position] {
+                        if *target >= instructions.len() { errors.push(VerifyError::JumpOutOfBounds { instruction_pointer: ip, target: *target }); }
+                    }
+                }
+                Instruction::ReturnDefinedCall { function_identifier, outputs } => {
+                    match self.find_function(*function_identifier) {
+                        None => errors.push(VerifyError::CanNotFoundDefinedFunction { instruction_pointer: ip, function_identifier: *function_identifier }),
+                        Some((callee, _)) => {
+                            if outputs.len() != callee.output_types.len() {
+                                errors.push(VerifyError::DefinedFunctionReturnCountMismatch { instruction_pointer: ip, expected: callee.output_types.len(), found: outputs.len() });
+                            } else {
+                                for (slot, expected) in outputs.iter().zip(&callee.output_types) {
+                                    self.read_slot(metadata, &initialized, ip, *slot, expected, errors);
+                                }
+                            }
+                        }
                     }
                 }
             }
         }
     }
 
-    fn verify_return_defined_call<'b>(
-        &self,
-        instruction_pointer: usize,
-        function_identifier: &FunctionIdentifier,
-        outputs: &Vec<Slot>,
-        errors: &mut Vec<VerifyError<'b>>,
-        types: &mut Vec<ConcreteType<'b>>,
+    fn find_function(&self, id: FunctionIdentifier) -> Option<(&ConcreteFunctionMetadata<'a>, &[ConcreteInstruction<'a>])> {
+        self.functions.iter().find(|(metadata, _)| metadata.function_identifier == id)
+            .map(|(metadata, body)| (metadata, body.as_ref()))
+    }
+
+    fn verify_generic_count(&self, ip: usize, expected: usize, found: usize, errors: &mut Vec<VerifyError<'a>>) {
+        if expected != found { errors.push(VerifyError::GenericArgumentCountMismatch { instruction_pointer: ip, expected, found }); }
+    }
+
+    fn verify_inputs(
+        &self, metadata: &ConcreteFunctionMetadata<'a>, initialized: &[bool], ip: usize,
+        inputs: &[Slot], expected: &[TypeExpression<'static>],
+        generics: &[crate::runtime_task::types::GenericParameter], arguments: &[ConcreteType<'a>],
+        errors: &mut Vec<VerifyError<'a>>,
     ) {
-        match self.defined_functions.get(function_identifier) {
-            None => {
-                errors.push(VerifyError::CanNotFoundDefinedFunction {
-                    instruction_pointer,
-                    function_identifier: *function_identifier,
-                });
-            }
-            Some(sig) => {
-                if outputs.len() != sig.outputs.len() {
-                    errors.push(VerifyError::DefinedFunctionReturnCountMismatch {
-                        instruction_pointer,
-                        expected: sig.outputs.len(),
-                        found: outputs.len(),
-                    });
-                } else {
-                    for (slot, output_type) in outputs.iter().zip(sig.outputs.iter()) {
-                        bind_slot(
-                            types,
-                            errors,
-                            instruction_pointer,
-                            *slot,
-                            output_type.clone(),
-                        );
-                    }
-                }
+        if inputs.len() != expected.len() {
+            errors.push(VerifyError::ArgumentCountMismatch { instruction_pointer: ip, expected: expected.len(), found: inputs.len() });
+            return;
+        }
+        for (slot, expected) in inputs.iter().zip(expected) {
+            let Some(found) = metadata.slot_types.get(*slot as usize) else { self.bad_slot(metadata, ip, *slot, errors); continue; };
+            if !initialized.get(*slot as usize).copied().unwrap_or(false) {
+                errors.push(VerifyError::UnboundSlot { instruction_pointer: ip, slot: *slot });
+            } else if !type_compatible(found, expected, generics, arguments) {
+                errors.push(VerifyError::SignatureTypeMismatch { instruction_pointer: ip, slot: *slot, expected: expected.clone(), found: found.clone() });
             }
         }
     }
-}
 
-/// Write a type to a slot for the first time, or validate that a subsequent
-/// write uses the same type as the originally established one.
-///
-/// The first write wins: it sets the canonical type for the slot.
-/// Any later write that would change the type is recorded as `TypeMismatch`.
-fn bind_slot<'a>(
-    slots: &mut Vec<ConcreteType<'a>>,
-    errors: &mut Vec<VerifyError<'a>>,
-    instruction_pointer: usize,
-    slot: Slot,
-    attempted: ConcreteType<'a>,
-) {
-    match slots.get(slot as usize) {
-        None => {
-            slots.insert(slot as usize, attempted);
+    fn read_slot(&self, metadata: &ConcreteFunctionMetadata<'a>, initialized: &[bool], ip: usize, slot: Slot, expected: &ConcreteType<'a>, errors: &mut Vec<VerifyError<'a>>) {
+        let Some(found) = metadata.slot_types.get(slot as usize) else { self.bad_slot(metadata, ip, slot, errors); return; };
+        if !initialized.get(slot as usize).copied().unwrap_or(false) {
+            errors.push(VerifyError::UnboundSlot { instruction_pointer: ip, slot });
+        } else if found != expected {
+            errors.push(VerifyError::TypeMismatch { instruction_pointer: ip, slot, expected: expected.clone(), found: found.clone() });
         }
-        Some(original) if *original != attempted => {
-            errors.push(VerifyError::TypeMismatch {
-                instruction_pointer,
-                slot,
-                expected: original.clone(),
-                found: attempted,
-            });
+    }
+
+    fn write_slot(&self, metadata: &ConcreteFunctionMetadata<'a>, initialized: &mut [bool], ip: usize, slot: Slot, attempted: &ConcreteType<'a>, errors: &mut Vec<VerifyError<'a>>) {
+        let Some(expected) = metadata.slot_types.get(slot as usize) else { self.bad_slot(metadata, ip, slot, errors); return; };
+        if expected != attempted {
+            errors.push(VerifyError::TypeMismatch { instruction_pointer: ip, slot, expected: expected.clone(), found: attempted.clone() });
         }
-        _ => {} // same type — no-op
+        if let Some(bound) = initialized.get_mut(slot as usize) { *bound = true; }
+    }
+
+    fn bad_slot(&self, metadata: &ConcreteFunctionMetadata<'a>, ip: usize, slot: Slot, errors: &mut Vec<VerifyError<'a>>) {
+        errors.push(VerifyError::SlotOutOfBounds { instruction_pointer: ip, slot, slot_count: metadata.slot_types.len() });
     }
 }
 
-/// Returns true when the literal variant matches the declared type.
 fn literal_matches_type(literal: &Literal, ty: &PrimitiveType) -> bool {
-    matches!(
-        (literal, ty),
-        (Literal::Integer(_), PrimitiveType::Integer)
-            | (Literal::Float(_), PrimitiveType::Float)
-            | (Literal::Boolean(_), PrimitiveType::Boolean)
-            | (Literal::Char(_), PrimitiveType::Char)
-            | (Literal::String(_), PrimitiveType::String)
-    )
+    matches!((literal, ty),
+        (Literal::Integer(_), PrimitiveType::Integer) | (Literal::Float(_), PrimitiveType::Float) |
+        (Literal::Boolean(_), PrimitiveType::Boolean) | (Literal::Char(_), PrimitiveType::Char) |
+        (Literal::String(_), PrimitiveType::String))
 }
 
-fn type_compatible(found: &ConcreteType, expected: &TypeExpression) -> bool {
-    match (found, expected) {
-        (_, TypeExpression::Generic(_)) => true,
-        (ConcreteType::Primitive(found), TypeExpression::Primitive(expected)) => found == expected,
-        (ConcreteType::Vector(found), TypeExpression::Vector(expected)) => type_compatible(found, expected),
-        (ConcreteType::Option(found), TypeExpression::Option(expected)) => type_compatible(found, expected),
-        (
-            ConcreteType::Result {
-                ok: found_ok,
-                err: found_err,
-            },
-            TypeExpression::Result {
-                ok: expected_ok,
-                err: expected_err,
-            },
-        ) => type_compatible(found_ok, expected_ok) && type_compatible(found_err, expected_err),
-        _ => false,
+fn type_compatible(
+    found: &ConcreteType<'_>, expected: &TypeExpression<'_>,
+    generics: &[crate::runtime_task::types::GenericParameter], arguments: &[ConcreteType<'_>],
+) -> bool {
+    match expected {
+        TypeExpression::Generic(id) => generics.iter().position(|generic| generic.id == *id)
+            .and_then(|index| arguments.get(index)).is_some_and(|argument| found == argument),
+        TypeExpression::Primitive(expected) => matches!(found, ConcreteType::Primitive(found) if found == expected),
+        TypeExpression::Vector(expected) => matches!(found, ConcreteType::Vector(found) if type_compatible(found, expected, generics, arguments)),
+        TypeExpression::Option(expected) => matches!(found, ConcreteType::Option(found) if type_compatible(found, expected, generics, arguments)),
+        TypeExpression::Result { ok, err } => matches!(found, ConcreteType::Result { ok: found_ok, err: found_err } if type_compatible(found_ok, ok, generics, arguments) && type_compatible(found_err, err, generics, arguments)),
     }
 }

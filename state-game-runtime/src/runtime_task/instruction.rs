@@ -92,7 +92,12 @@ define_function_registry!(
         inputs: &[TypeExpression::Primitive(PrimitiveType::Integer), TypeExpression::Primitive(PrimitiveType::Integer)], // integer1, integer2
         output: TypeExpression::Primitive(PrimitiveType::Integer)
     },
-    ModInteger => {
+    RemInteger => {
+        generics: &[],
+        inputs: &[TypeExpression::Primitive(PrimitiveType::Integer), TypeExpression::Primitive(PrimitiveType::Integer)], // integer1, integer2
+        output: TypeExpression::Primitive(PrimitiveType::Integer)
+    },
+    RemEuclidInteger => {
         generics: &[],
         inputs: &[TypeExpression::Primitive(PrimitiveType::Integer), TypeExpression::Primitive(PrimitiveType::Integer)], // integer1, integer2
         output: TypeExpression::Primitive(PrimitiveType::Integer)

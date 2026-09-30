@@ -252,14 +252,6 @@ impl<'a> RuntimeTask<'a> {
                 old: old_value,
                 new: Some(value),
             }));
-        } else if index == self.slots.len() {
-            self.slots.push(value.clone());
-
-            self.event_emit(RuntimeTaskEventKind::StateChange(StateChange {
-                identifier: Self::slot_name(slot),
-                old: None,
-                new: Some(value),
-            }));
         }
     }
 
@@ -501,9 +493,9 @@ impl<'a> RuntimeTask<'a> {
                 if *rhs == 0 {
                     return Err(self.trap(TrapReason::DivisionByZero));
                 }
-                Ok(Arc::new(RuntimeValue::Integer(args[0].integer() / rhs)))
+                Ok(Arc::new(RuntimeValue::Integer(args[0].integer().wrapping_div(*rhs))))
             }
-            Functions::ModInteger => {
+            Functions::RemInteger => {
                 if args.len() != 2 {
                     return Err(self.trap(TrapReason::VerifierBug(
                         "Argument count Mismatch".to_string(),
@@ -513,7 +505,19 @@ impl<'a> RuntimeTask<'a> {
                 if *rhs == 0 {
                     return Err(self.trap(TrapReason::DivisionByZero));
                 }
-                Ok(Arc::new(RuntimeValue::Integer(args[0].integer() % rhs)))
+                Ok(Arc::new(RuntimeValue::Integer(args[0].integer().wrapping_rem(*rhs))))
+            }
+            Functions::RemEuclidInteger => {
+                if args.len() != 2 {
+                    return Err(self.trap(TrapReason::VerifierBug(
+                        "Argument count Mismatch".to_string(),
+                    )));
+                }
+                let rhs = args[1].integer();
+                if *rhs == 0 {
+                    return Err(self.trap(TrapReason::DivisionByZero));
+                }
+                Ok(Arc::new(RuntimeValue::Integer(args[0].integer().wrapping_rem_euclid(*rhs))))
             }
             Functions::PowInteger => {
                 if args.len() != 2 {

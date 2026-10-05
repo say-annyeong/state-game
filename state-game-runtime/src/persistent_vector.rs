@@ -13,7 +13,7 @@ use node_kind::{BranchNode, LeafNode, NodeArray};
 
 const NODE_CAPACITY: usize = 32; // todo: 4 -> 32
 
-pub type PersistentVector<T: ?Sized> = InnerPersistentVector<T, NODE_CAPACITY>;
+pub type PersistentVector<T> = InnerPersistentVector<T, NODE_CAPACITY>;
 
 /// Invariants:
 ///

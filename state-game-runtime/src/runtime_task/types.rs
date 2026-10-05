@@ -1,6 +1,5 @@
+use std::collections::HashMap;
 use std::sync::Arc;
-
-use bumpalo::Bump;
 
 use crate::persistent_vector::PersistentVector;
 
@@ -17,30 +16,152 @@ pub enum PrimitiveType {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct GenericIdentifier(pub u64);
 
+/// ID for a type node that may contain generics (used inside TypeExpression).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct TypeIdentifier(pub u32);
+pub struct GenericTypeIdentifier(pub u64);
+
+/// ID for a fully-concrete type node (used inside ConcreteType).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct NonGenericTypeIdentifier(pub u64);
+
+// ---------------------------------------------------------------------------
+// TypeExpression — may reference generics; inner nodes stored by ID
+// ---------------------------------------------------------------------------
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub enum TypeExpression<'a> {
+pub enum TypeExpression {
     Primitive(PrimitiveType),
-
     Generic(GenericIdentifier),
-
-    Vector(&'a Self),
-    Option(&'a Self),
-    Result { ok: &'a Self, err: &'a Self },
+    Vector(GenericTypeIdentifier),
+    Option(GenericTypeIdentifier),
+    Result { ok: GenericTypeIdentifier, err: GenericTypeIdentifier },
 }
+
+// ---------------------------------------------------------------------------
+// ConcreteType — no generics; inner nodes stored by ID
+// ---------------------------------------------------------------------------
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum ConcreteType {
+    Primitive(PrimitiveType),
+    Vector(NonGenericTypeIdentifier),
+    Option(NonGenericTypeIdentifier),
+    Result { ok: NonGenericTypeIdentifier, err: NonGenericTypeIdentifier },
+}
+
+// ---------------------------------------------------------------------------
+// Generic-type interner: stores TypeExpression nodes, returns GenericTypeIdentifier
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Default, Clone)]
+pub struct GenericTypeInterner {
+    types: Vec<TypeExpression>,
+    map: HashMap<TypeExpression, GenericTypeIdentifier>,
+}
+
+impl GenericTypeInterner {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn intern(&mut self, ty: TypeExpression) -> GenericTypeIdentifier {
+        if let Some(id) = self.map.get(&ty) {
+            return *id;
+        }
+        let id = GenericTypeIdentifier(self.types.len() as u64);
+        self.types.push(ty.clone());
+        self.map.insert(ty, id);
+        id
+    }
+
+    pub fn get(&self, id: GenericTypeIdentifier) -> Option<&TypeExpression> {
+        self.types.get(id.0 as usize)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Concrete-type interner: stores ConcreteType nodes, returns NonGenericTypeIdentifier
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Default, Clone)]
+pub struct ConcreteTypeInterner {
+    types: Vec<ConcreteType>,
+    map: HashMap<ConcreteType, NonGenericTypeIdentifier>,
+}
+
+impl ConcreteTypeInterner {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn intern(&mut self, ty: ConcreteType) -> NonGenericTypeIdentifier {
+        if let Some(id) = self.map.get(&ty) {
+            return *id;
+        }
+        let id = NonGenericTypeIdentifier(self.types.len() as u64);
+        self.types.push(ty.clone());
+        self.map.insert(ty, id);
+        id
+    }
+
+    pub fn get(&self, id: NonGenericTypeIdentifier) -> Option<&ConcreteType> {
+        self.types.get(id.0 as usize)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+/// Convert a ConcreteType into a TypeExpression using an interner for
+/// any nested node IDs that need to be re-registered.
+pub fn concrete_to_expression(
+    ct: &ConcreteType,
+    concrete_interner: &ConcreteTypeInterner,
+    generic_interner: &mut GenericTypeInterner,
+) -> TypeExpression {
+    match ct {
+        ConcreteType::Primitive(p) => TypeExpression::Primitive(*p),
+        ConcreteType::Vector(inner_id) => {
+            let inner_ct = concrete_interner.get(*inner_id).cloned()
+                .unwrap_or(ConcreteType::Primitive(PrimitiveType::Unit));
+            let inner_te = concrete_to_expression(&inner_ct, concrete_interner, generic_interner);
+            let gid = generic_interner.intern(inner_te);
+            TypeExpression::Vector(gid)
+        }
+        ConcreteType::Option(inner_id) => {
+            let inner_ct = concrete_interner.get(*inner_id).cloned()
+                .unwrap_or(ConcreteType::Primitive(PrimitiveType::Unit));
+            let inner_te = concrete_to_expression(&inner_ct, concrete_interner, generic_interner);
+            let gid = generic_interner.intern(inner_te);
+            TypeExpression::Option(gid)
+        }
+        ConcreteType::Result { ok: ok_id, err: err_id } => {
+            let ok_ct = concrete_interner.get(*ok_id).cloned()
+                .unwrap_or(ConcreteType::Primitive(PrimitiveType::Unit));
+            let err_ct = concrete_interner.get(*err_id).cloned()
+                .unwrap_or(ConcreteType::Primitive(PrimitiveType::Unit));
+            let ok_te = concrete_to_expression(&ok_ct, concrete_interner, generic_interner);
+            let err_te = concrete_to_expression(&err_ct, concrete_interner, generic_interner);
+            let ok_gid = generic_interner.intern(ok_te);
+            let err_gid = generic_interner.intern(err_te);
+            TypeExpression::Result { ok: ok_gid, err: err_gid }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Generic types
+// ---------------------------------------------------------------------------
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum GenericKind {
     Type,
-    // Const, // todo
-    // Lifetime, // todo
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum Constraint {
-    None, // todo
+    None,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -50,44 +171,9 @@ pub struct GenericParameter {
     pub constraints: &'static [Constraint],
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub enum ConcreteType<'a> {
-    Primitive(PrimitiveType),
-
-    Vector(&'a Self),
-    Option(&'a Self),
-    Result { ok: &'a Self, err: &'a Self },
-}
-
-pub fn convert<'a>(
-    value: &ConcreteType<'a>,
-    arena: &'a Bump,
-) -> &'a TypeExpression<'a> {
-    match value {
-        ConcreteType::Primitive(p) => {
-            arena.alloc(TypeExpression::Primitive(*p))
-        }
-
-        ConcreteType::Vector(inner) => {
-            let child = convert(inner, arena);
-
-            arena.alloc(TypeExpression::Vector(child))
-        }
-
-        ConcreteType::Option(inner) => {
-            let child = convert(inner, arena);
-
-            arena.alloc(TypeExpression::Option(child))
-        }
-
-        ConcreteType::Result { ok, err } => {
-            let ok = convert(ok, arena);
-            let err = convert(err, arena);
-
-            arena.alloc(TypeExpression::Result { ok, err })
-        }
-    }
-}
+// ---------------------------------------------------------------------------
+// RuntimeValue
+// ---------------------------------------------------------------------------
 
 #[derive(Clone, Debug)]
 pub enum RuntimeValue {

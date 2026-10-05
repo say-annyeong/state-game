@@ -1,14 +1,17 @@
 use crate::{
-    runtime_task::types::{ConcreteType, GenericIdentifier, GenericKind, GenericParameter, PrimitiveType, TypeExpression},
-    define_function_registry
+    runtime_task::types::{
+        ConcreteType, GenericIdentifier, GenericKind, GenericParameter,
+        GenericTypeIdentifier, GenericTypeInterner, PrimitiveType, TypeExpression,
+    },
+    define_function_registry,
 };
 
 pub type Slot = u64;
 pub type FunctionIdentifier = u64;
 pub type RuntimeTaskIdentifier = u64;
 
-pub type ConcreteInstruction<'a> = Instruction<ConcreteType<'a>>;
-pub type ExpressionInstruction<'a> = Instruction<TypeExpression<'a>>;
+pub type ConcreteInstruction = Instruction<ConcreteType>;
+pub type ExpressionInstruction = Instruction<TypeExpression>;
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Instruction<Type> {
@@ -22,8 +25,6 @@ pub enum Instruction<Type> {
         function_name: Functions,
         generic_arguments: Box<[Type]>,
         inputs: Vec<Slot>,
-        /// The output must undergo the same type checking as Bind.
-        /// Execution will fail if there is a type mismatch.
         output: Slot,
     },
 
@@ -31,15 +32,13 @@ pub enum Instruction<Type> {
         function_name: SpecialFunctions,
         generic_arguments: Box<[Type]>,
         inputs: Vec<Slot>,
-        /// The output must undergo the same type checking as Bind.
-        /// Execution will fail if there is a type mismatch.
         output: Slot,
     },
 
     DefinedCall {
         function_identifier: FunctionIdentifier,
         generic_arguments: Box<[Type]>,
-        inputs: Vec<Slot>, // input
+        inputs: Vec<Slot>,
         outputs: Vec<Slot>,
     },
 
@@ -48,7 +47,7 @@ pub enum Instruction<Type> {
     },
 
     ConditionalJump {
-        condition: Slot, // only Boolean
+        condition: Slot,
         true_target_position: usize,
         false_target_position: usize,
     },
@@ -68,337 +67,415 @@ pub enum Literal {
     Boolean(bool),
 }
 
+// ---------------------------------------------------------------------------
+// FunctionSignature: built once per registry lookup via an interner.
+// ---------------------------------------------------------------------------
+
+pub struct FunctionSignature {
+    pub generics: Vec<GenericParameter>,
+    pub inputs: Vec<TypeExpression>,
+    pub output: TypeExpression,
+}
+
+pub struct FunctionRegistry<const N: usize> {
+    /// Each entry is a builder that creates a `FunctionSignature` using the
+    /// provided `GenericTypeInterner`.
+    pub builders: [fn(&mut GenericTypeInterner) -> FunctionSignature; N],
+}
+
+impl<const N: usize> FunctionRegistry<N> {
+    pub fn build(&self, index: usize, interner: &mut GenericTypeInterner) -> Option<FunctionSignature> {
+        self.builders.get(index).map(|f| f(interner))
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Helper used in builders below
+// ---------------------------------------------------------------------------
+
+fn primitive(ty: PrimitiveType) -> TypeExpression {
+    TypeExpression::Primitive(ty)
+}
+
+fn vector_of(inner: TypeExpression, interner: &mut GenericTypeInterner) -> TypeExpression {
+    let id = interner.intern(inner);
+    TypeExpression::Vector(id)
+}
+
+fn option_of(inner: TypeExpression, interner: &mut GenericTypeInterner) -> TypeExpression {
+    let id = interner.intern(inner);
+    TypeExpression::Option(id)
+}
+
+fn result_of(ok: TypeExpression, err: TypeExpression, interner: &mut GenericTypeInterner) -> TypeExpression {
+    let ok_id = interner.intern(ok);
+    let err_id = interner.intern(err);
+    TypeExpression::Result { ok: ok_id, err: err_id }
+}
+
+fn generic(id: u64) -> TypeExpression {
+    TypeExpression::Generic(GenericIdentifier(id))
+}
+
+fn generic_parameter(id: u64) -> GenericParameter {
+    GenericParameter {
+        id: GenericIdentifier(id),
+        kind: GenericKind::Type,
+        constraints: &[],
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Functions enum + FUNCTION_REGISTRY
+// ---------------------------------------------------------------------------
+
 define_function_registry!(
     pub enum Functions;
     pub const FUNCTION_REGISTRY;
 
+    // ── Integer arithmetic ────────────────────────────────────────────────────
     AddInteger => {
-        generics: &[],
-        inputs: &[TypeExpression::Primitive(PrimitiveType::Integer), TypeExpression::Primitive(PrimitiveType::Integer)], // integer1, integer2
-        output: TypeExpression::Primitive(PrimitiveType::Integer)
+        |_i: &mut GenericTypeInterner| FunctionSignature {
+            generics: vec![],
+            inputs: vec![primitive(PrimitiveType::Integer), primitive(PrimitiveType::Integer)],
+            output: primitive(PrimitiveType::Integer),
+        }
     },
     SubInteger => {
-        generics: &[],
-        inputs: &[TypeExpression::Primitive(PrimitiveType::Integer), TypeExpression::Primitive(PrimitiveType::Integer)], // integer1, integer2
-        output: TypeExpression::Primitive(PrimitiveType::Integer)
+        |_i: &mut GenericTypeInterner| FunctionSignature {
+            generics: vec![],
+            inputs: vec![primitive(PrimitiveType::Integer), primitive(PrimitiveType::Integer)],
+            output: primitive(PrimitiveType::Integer),
+        }
     },
     MulInteger => {
-        generics: &[],
-        inputs: &[TypeExpression::Primitive(PrimitiveType::Integer), TypeExpression::Primitive(PrimitiveType::Integer)], // integer1, integer2
-        output: TypeExpression::Primitive(PrimitiveType::Integer)
+        |_i: &mut GenericTypeInterner| FunctionSignature {
+            generics: vec![],
+            inputs: vec![primitive(PrimitiveType::Integer), primitive(PrimitiveType::Integer)],
+            output: primitive(PrimitiveType::Integer),
+        }
     },
     DivInteger => {
-        generics: &[],
-        inputs: &[TypeExpression::Primitive(PrimitiveType::Integer), TypeExpression::Primitive(PrimitiveType::Integer)], // integer1, integer2
-        output: TypeExpression::Primitive(PrimitiveType::Integer)
+        |_i: &mut GenericTypeInterner| FunctionSignature {
+            generics: vec![],
+            inputs: vec![primitive(PrimitiveType::Integer), primitive(PrimitiveType::Integer)],
+            output: primitive(PrimitiveType::Integer),
+        }
     },
     RemInteger => {
-        generics: &[],
-        inputs: &[TypeExpression::Primitive(PrimitiveType::Integer), TypeExpression::Primitive(PrimitiveType::Integer)], // integer1, integer2
-        output: TypeExpression::Primitive(PrimitiveType::Integer)
+        |_i: &mut GenericTypeInterner| FunctionSignature {
+            generics: vec![],
+            inputs: vec![primitive(PrimitiveType::Integer), primitive(PrimitiveType::Integer)],
+            output: primitive(PrimitiveType::Integer),
+        }
     },
     RemEuclidInteger => {
-        generics: &[],
-        inputs: &[TypeExpression::Primitive(PrimitiveType::Integer), TypeExpression::Primitive(PrimitiveType::Integer)], // integer1, integer2
-        output: TypeExpression::Primitive(PrimitiveType::Integer)
+        |_i: &mut GenericTypeInterner| FunctionSignature {
+            generics: vec![],
+            inputs: vec![primitive(PrimitiveType::Integer), primitive(PrimitiveType::Integer)],
+            output: primitive(PrimitiveType::Integer),
+        }
     },
     PowInteger => {
-        generics: &[],
-        inputs: &[TypeExpression::Primitive(PrimitiveType::Integer), TypeExpression::Primitive(PrimitiveType::Integer)], // integer1, integer2
-        output: TypeExpression::Primitive(PrimitiveType::Integer)
+        |_i: &mut GenericTypeInterner| FunctionSignature {
+            generics: vec![],
+            inputs: vec![primitive(PrimitiveType::Integer), primitive(PrimitiveType::Integer)],
+            output: primitive(PrimitiveType::Integer),
+        }
     },
+
+    // ── Float arithmetic ──────────────────────────────────────────────────────
     AddFloat => {
-        generics: &[],
-        inputs: &[TypeExpression::Primitive(PrimitiveType::Float), TypeExpression::Primitive(PrimitiveType::Float)], // float1, float2
-        output: TypeExpression::Primitive(PrimitiveType::Float)
+        |_i: &mut GenericTypeInterner| FunctionSignature {
+            generics: vec![],
+            inputs: vec![primitive(PrimitiveType::Float), primitive(PrimitiveType::Float)],
+            output: primitive(PrimitiveType::Float),
+        }
     },
     SubFloat => {
-        generics: &[],
-        inputs: &[TypeExpression::Primitive(PrimitiveType::Float), TypeExpression::Primitive(PrimitiveType::Float)], // float1, float2
-        output: TypeExpression::Primitive(PrimitiveType::Float)
+        |_i: &mut GenericTypeInterner| FunctionSignature {
+            generics: vec![],
+            inputs: vec![primitive(PrimitiveType::Float), primitive(PrimitiveType::Float)],
+            output: primitive(PrimitiveType::Float),
+        }
     },
     MulFloat => {
-        generics: &[],
-        inputs: &[TypeExpression::Primitive(PrimitiveType::Float), TypeExpression::Primitive(PrimitiveType::Float)], // float1, float2
-        output: TypeExpression::Primitive(PrimitiveType::Float)
+        |_i: &mut GenericTypeInterner| FunctionSignature {
+            generics: vec![],
+            inputs: vec![primitive(PrimitiveType::Float), primitive(PrimitiveType::Float)],
+            output: primitive(PrimitiveType::Float),
+        }
     },
     DivFloat => {
-        generics: &[],
-        inputs: &[TypeExpression::Primitive(PrimitiveType::Float), TypeExpression::Primitive(PrimitiveType::Float)], // float1, float2
-        output: TypeExpression::Primitive(PrimitiveType::Float)
+        |_i: &mut GenericTypeInterner| FunctionSignature {
+            generics: vec![],
+            inputs: vec![primitive(PrimitiveType::Float), primitive(PrimitiveType::Float)],
+            output: primitive(PrimitiveType::Float),
+        }
     },
     PowFloat => {
-        generics: &[],
-        inputs: &[TypeExpression::Primitive(PrimitiveType::Float), TypeExpression::Primitive(PrimitiveType::Float)], // float1, float2
-        output: TypeExpression::Primitive(PrimitiveType::Float)
+        |_i: &mut GenericTypeInterner| FunctionSignature {
+            generics: vec![],
+            inputs: vec![primitive(PrimitiveType::Float), primitive(PrimitiveType::Float)],
+            output: primitive(PrimitiveType::Float),
+        }
     },
+
+    // ── Integer comparisons ───────────────────────────────────────────────────
     EqualInteger => {
-        generics: &[],
-        inputs: &[TypeExpression::Primitive(PrimitiveType::Integer), TypeExpression::Primitive(PrimitiveType::Integer)], // integer1, integer2
-        output: TypeExpression::Primitive(PrimitiveType::Boolean)
+        |_i: &mut GenericTypeInterner| FunctionSignature {
+            generics: vec![],
+            inputs: vec![primitive(PrimitiveType::Integer), primitive(PrimitiveType::Integer)],
+            output: primitive(PrimitiveType::Boolean),
+        }
     },
     NotEqualInteger => {
-        generics: &[],
-        inputs: &[TypeExpression::Primitive(PrimitiveType::Integer), TypeExpression::Primitive(PrimitiveType::Integer)], // integer1, integer2
-        output: TypeExpression::Primitive(PrimitiveType::Boolean)
+        |_i: &mut GenericTypeInterner| FunctionSignature {
+            generics: vec![],
+            inputs: vec![primitive(PrimitiveType::Integer), primitive(PrimitiveType::Integer)],
+            output: primitive(PrimitiveType::Boolean),
+        }
     },
     GreaterThanInteger => {
-        generics: &[],
-        inputs: &[TypeExpression::Primitive(PrimitiveType::Integer), TypeExpression::Primitive(PrimitiveType::Integer)], // integer1, integer2
-        output: TypeExpression::Primitive(PrimitiveType::Boolean)
+        |_i: &mut GenericTypeInterner| FunctionSignature {
+            generics: vec![],
+            inputs: vec![primitive(PrimitiveType::Integer), primitive(PrimitiveType::Integer)],
+            output: primitive(PrimitiveType::Boolean),
+        }
     },
     LessThanInteger => {
-        generics: &[],
-        inputs: &[TypeExpression::Primitive(PrimitiveType::Integer), TypeExpression::Primitive(PrimitiveType::Integer)], // integer1, integer2
-        output: TypeExpression::Primitive(PrimitiveType::Boolean)
+        |_i: &mut GenericTypeInterner| FunctionSignature {
+            generics: vec![],
+            inputs: vec![primitive(PrimitiveType::Integer), primitive(PrimitiveType::Integer)],
+            output: primitive(PrimitiveType::Boolean),
+        }
     },
     GreaterThanFloat => {
-        generics: &[],
-        inputs: &[TypeExpression::Primitive(PrimitiveType::Float), TypeExpression::Primitive(PrimitiveType::Float)], // float1, float2
-        output: TypeExpression::Primitive(PrimitiveType::Boolean)
+        |_i: &mut GenericTypeInterner| FunctionSignature {
+            generics: vec![],
+            inputs: vec![primitive(PrimitiveType::Float), primitive(PrimitiveType::Float)],
+            output: primitive(PrimitiveType::Boolean),
+        }
     },
     LessThanFloat => {
-        generics: &[],
-        inputs: &[TypeExpression::Primitive(PrimitiveType::Float), TypeExpression::Primitive(PrimitiveType::Float)], // float1, float2
-        output: TypeExpression::Primitive(PrimitiveType::Boolean)
+        |_i: &mut GenericTypeInterner| FunctionSignature {
+            generics: vec![],
+            inputs: vec![primitive(PrimitiveType::Float), primitive(PrimitiveType::Float)],
+            output: primitive(PrimitiveType::Boolean),
+        }
     },
+
+    // ── Boolean logic ─────────────────────────────────────────────────────────
     Not => {
-        generics: &[],
-        inputs: &[TypeExpression::Primitive(PrimitiveType::Boolean)], // bool
-        output: TypeExpression::Primitive(PrimitiveType::Boolean)
+        |_i: &mut GenericTypeInterner| FunctionSignature {
+            generics: vec![],
+            inputs: vec![primitive(PrimitiveType::Boolean)],
+            output: primitive(PrimitiveType::Boolean),
+        }
     },
     And => {
-        generics: &[],
-        inputs: &[TypeExpression::Primitive(PrimitiveType::Boolean), TypeExpression::Primitive(PrimitiveType::Boolean)], // bool1, bool2
-        output: TypeExpression::Primitive(PrimitiveType::Boolean)
+        |_i: &mut GenericTypeInterner| FunctionSignature {
+            generics: vec![],
+            inputs: vec![primitive(PrimitiveType::Boolean), primitive(PrimitiveType::Boolean)],
+            output: primitive(PrimitiveType::Boolean),
+        }
     },
     Or => {
-        generics: &[],
-        inputs: &[TypeExpression::Primitive(PrimitiveType::Boolean), TypeExpression::Primitive(PrimitiveType::Boolean)], // bool1, bool2
-        output: TypeExpression::Primitive(PrimitiveType::Boolean)
+        |_i: &mut GenericTypeInterner| FunctionSignature {
+            generics: vec![],
+            inputs: vec![primitive(PrimitiveType::Boolean), primitive(PrimitiveType::Boolean)],
+            output: primitive(PrimitiveType::Boolean),
+        }
     },
     Xor => {
-        generics: &[],
-        inputs: &[TypeExpression::Primitive(PrimitiveType::Boolean), TypeExpression::Primitive(PrimitiveType::Boolean)], // bool1, bool2
-        output: TypeExpression::Primitive(PrimitiveType::Boolean)
+        |_i: &mut GenericTypeInterner| FunctionSignature {
+            generics: vec![],
+            inputs: vec![primitive(PrimitiveType::Boolean), primitive(PrimitiveType::Boolean)],
+            output: primitive(PrimitiveType::Boolean),
+        }
     },
+
+    // ── String operations ─────────────────────────────────────────────────────
     EqualString => {
-        generics: &[],
-        inputs: &[TypeExpression::Primitive(PrimitiveType::String), TypeExpression::Primitive(PrimitiveType::String)], // string1, string2
-        output: TypeExpression::Primitive(PrimitiveType::Boolean)
+        |_i: &mut GenericTypeInterner| FunctionSignature {
+            generics: vec![],
+            inputs: vec![primitive(PrimitiveType::String), primitive(PrimitiveType::String)],
+            output: primitive(PrimitiveType::Boolean),
+        }
     },
     StringLength => {
-        generics: &[],
-        inputs: &[TypeExpression::Primitive(PrimitiveType::String)], // string
-        output: TypeExpression::Primitive(PrimitiveType::Integer)
+        |_i: &mut GenericTypeInterner| FunctionSignature {
+            generics: vec![],
+            inputs: vec![primitive(PrimitiveType::String)],
+            output: primitive(PrimitiveType::Integer),
+        }
     },
     StringGetChar => {
-        generics: &[],
-        inputs: &[TypeExpression::Primitive(PrimitiveType::String), TypeExpression::Primitive(PrimitiveType::Integer)], // string, index
-        output: TypeExpression::Primitive(PrimitiveType::Char)
+        |_i: &mut GenericTypeInterner| FunctionSignature {
+            generics: vec![],
+            inputs: vec![primitive(PrimitiveType::String), primitive(PrimitiveType::Integer)],
+            output: primitive(PrimitiveType::Char),
+        }
     },
     StringCombine => {
-        generics: &[],
-        inputs: &[TypeExpression::Primitive(PrimitiveType::String), TypeExpression::Primitive(PrimitiveType::String)], // string1, string2
-        output: TypeExpression::Primitive(PrimitiveType::String)
+        |_i: &mut GenericTypeInterner| FunctionSignature {
+            generics: vec![],
+            inputs: vec![primitive(PrimitiveType::String), primitive(PrimitiveType::String)],
+            output: primitive(PrimitiveType::String),
+        }
     },
     StringToInteger => {
-        generics: &[],
-        inputs: &[TypeExpression::Primitive(PrimitiveType::String)], // string
-        output: TypeExpression::Option(&TypeExpression::Primitive(PrimitiveType::Integer))
+        |i: &mut GenericTypeInterner| FunctionSignature {
+            generics: vec![],
+            inputs: vec![primitive(PrimitiveType::String)],
+            output: option_of(primitive(PrimitiveType::Integer), i),
+        }
     },
     StringToFloat => {
-        generics: &[],
-        inputs: &[TypeExpression::Primitive(PrimitiveType::String)], // string
-        output: TypeExpression::Option(&TypeExpression::Primitive(PrimitiveType::Float))
+        |i: &mut GenericTypeInterner| FunctionSignature {
+            generics: vec![],
+            inputs: vec![primitive(PrimitiveType::String)],
+            output: option_of(primitive(PrimitiveType::Float), i),
+        }
     },
     StringToBoolean => {
-        generics: &[],
-        inputs: &[TypeExpression::Primitive(PrimitiveType::String)], // string
-        output: TypeExpression::Option(&TypeExpression::Primitive(PrimitiveType::Boolean))
+        |i: &mut GenericTypeInterner| FunctionSignature {
+            generics: vec![],
+            inputs: vec![primitive(PrimitiveType::String)],
+            output: option_of(primitive(PrimitiveType::Boolean), i),
+        }
     },
+
+    // ── Vector operations ─────────────────────────────────────────────────────
     VectorGet => {
-        generics: &[],
-        inputs: &[TypeExpression::Vector(&TypeExpression::Generic(GenericIdentifier(0))), TypeExpression::Primitive(PrimitiveType::Integer)], // vector, index
-        output: TypeExpression::Generic(GenericIdentifier(0))
+        |i: &mut GenericTypeInterner| FunctionSignature {
+            generics: vec![generic_parameter(0)],
+            inputs: vec![vector_of(generic(0), i), primitive(PrimitiveType::Integer)],
+            output: generic(0),
+        }
     },
     VectorNew => {
-        generics: &[GenericParameter {
-            id: GenericIdentifier(0),
-            kind: GenericKind::Type,
-            constraints: &[],
-        }],
-        inputs: &[],
-        output: TypeExpression::Vector(&TypeExpression::Generic(GenericIdentifier(0)))
+        |i: &mut GenericTypeInterner| FunctionSignature {
+            generics: vec![generic_parameter(0)],
+            inputs: vec![],
+            output: vector_of(generic(0), i),
+        }
     },
     VectorPush => {
-        generics: &[GenericParameter {
-            id: GenericIdentifier(0),
-            kind: GenericKind::Type,
-            constraints: &[],
-        }],
-        inputs: &[TypeExpression::Vector(&TypeExpression::Generic(GenericIdentifier(0))), TypeExpression::Generic(GenericIdentifier(0))], // vector, value
-        output: TypeExpression::Vector(&TypeExpression::Generic(GenericIdentifier(0)))
+        |i: &mut GenericTypeInterner| FunctionSignature {
+            generics: vec![generic_parameter(0)],
+            inputs: vec![vector_of(generic(0), i), generic(0)],
+            output: vector_of(generic(0), i),
+        }
     },
     VectorPop => {
-        generics: &[GenericParameter {
-            id: GenericIdentifier(0),
-            kind: GenericKind::Type,
-            constraints: &[]
-        }],
-        inputs: &[TypeExpression::Vector(&TypeExpression::Generic(GenericIdentifier(0)))], // vector
-        output: TypeExpression::Vector(&TypeExpression::Generic(GenericIdentifier(0)))
+        |i: &mut GenericTypeInterner| FunctionSignature {
+            generics: vec![generic_parameter(0)],
+            inputs: vec![vector_of(generic(0), i)],
+            output: vector_of(generic(0), i),
+        }
     },
+
+    // ── Option operations ─────────────────────────────────────────────────────
     IsSome => {
-        generics: &[GenericParameter {
-            id: GenericIdentifier(0),
-            kind: GenericKind::Type,
-            constraints: &[]
-        }],
-        inputs: &[TypeExpression::Option(&TypeExpression::Generic(GenericIdentifier(0)))], // option
-        output: TypeExpression::Primitive(PrimitiveType::Boolean)
+        |i: &mut GenericTypeInterner| FunctionSignature {
+            generics: vec![generic_parameter(0)],
+            inputs: vec![option_of(generic(0), i)],
+            output: primitive(PrimitiveType::Boolean),
+        }
     },
     IsNone => {
-        generics: &[GenericParameter {
-            id: GenericIdentifier(0),
-            kind: GenericKind::Type,
-            constraints: &[]
-        }],
-        inputs: &[TypeExpression::Option(&TypeExpression::Generic(GenericIdentifier(0)))], // option
-        output: TypeExpression::Primitive(PrimitiveType::Boolean)
+        |i: &mut GenericTypeInterner| FunctionSignature {
+            generics: vec![generic_parameter(0)],
+            inputs: vec![option_of(generic(0), i)],
+            output: primitive(PrimitiveType::Boolean),
+        }
     },
     IsOk => {
-        generics: &[GenericParameter {
-            id: GenericIdentifier(0),
-            kind: GenericKind::Type,
-            constraints: &[]
-        }, GenericParameter {
-            id: GenericIdentifier(1),
-            kind: GenericKind::Type,
-            constraints: &[]
-        }],
-        inputs: &[TypeExpression::Result { ok: &TypeExpression::Generic(GenericIdentifier(0)), err: &TypeExpression::Generic(GenericIdentifier(1))}], // result
-        output: TypeExpression::Primitive(PrimitiveType::Boolean)
+        |i: &mut GenericTypeInterner| FunctionSignature {
+            generics: vec![generic_parameter(0), generic_parameter(1)],
+            inputs: vec![result_of(generic(0), generic(1), i)],
+            output: primitive(PrimitiveType::Boolean),
+        }
     },
     IsErr => {
-        generics: &[GenericParameter {
-            id: GenericIdentifier(0),
-            kind: GenericKind::Type,
-            constraints: &[]
-        }, GenericParameter {
-            id: GenericIdentifier(1),
-            kind: GenericKind::Type,
-            constraints: &[]
-        }],
-        inputs: &[TypeExpression::Result { ok: &TypeExpression::Generic(GenericIdentifier(0)), err: &TypeExpression::Generic(GenericIdentifier(1))}], // result
-        output: TypeExpression::Primitive(PrimitiveType::Boolean)
+        |i: &mut GenericTypeInterner| FunctionSignature {
+            generics: vec![generic_parameter(0), generic_parameter(1)],
+            inputs: vec![result_of(generic(0), generic(1), i)],
+            output: primitive(PrimitiveType::Boolean),
+        }
     },
     UnwrapSome => {
-        generics: &[GenericParameter {
-            id: GenericIdentifier(0),
-            kind: GenericKind::Type,
-            constraints: &[]
-        }],
-        inputs: &[TypeExpression::Option(&TypeExpression::Generic(GenericIdentifier(0)))], // option
-        output: TypeExpression::Generic(GenericIdentifier(0))
+        |i: &mut GenericTypeInterner| FunctionSignature {
+            generics: vec![generic_parameter(0)],
+            inputs: vec![option_of(generic(0), i)],
+            output: generic(0),
+        }
     },
     UnwrapOk => {
-        generics: &[GenericParameter {
-            id: GenericIdentifier(0),
-            kind: GenericKind::Type,
-            constraints: &[]
-        }, GenericParameter {
-            id: GenericIdentifier(1),
-            kind: GenericKind::Type,
-            constraints: &[]
-        }],
-        inputs: &[TypeExpression::Result { ok: &TypeExpression::Generic(GenericIdentifier(0)), err: &TypeExpression::Generic(GenericIdentifier(1))}], // result
-        output: TypeExpression::Generic(GenericIdentifier(0))
+        |i: &mut GenericTypeInterner| FunctionSignature {
+            generics: vec![generic_parameter(0), generic_parameter(1)],
+            inputs: vec![result_of(generic(0), generic(1), i)],
+            output: generic(0),
+        }
     },
     UnwrapErr => {
-        generics: &[GenericParameter {
-            id: GenericIdentifier(0),
-            kind: GenericKind::Type,
-            constraints: &[]
-        }, GenericParameter {
-            id: GenericIdentifier(1),
-            kind: GenericKind::Type,
-            constraints: &[]
-        }],
-        inputs: &[TypeExpression::Result { ok: &TypeExpression::Generic(GenericIdentifier(0)), err: &TypeExpression::Generic(GenericIdentifier(1))}], // result
-        output: TypeExpression::Generic(GenericIdentifier(1))
+        |i: &mut GenericTypeInterner| FunctionSignature {
+            generics: vec![generic_parameter(0), generic_parameter(1)],
+            inputs: vec![result_of(generic(0), generic(1), i)],
+            output: generic(1),
+        }
     },
 );
+
+// ---------------------------------------------------------------------------
+// SpecialFunctions enum + SPECIAL_FUNCTIONS_REGISTRY
+// ---------------------------------------------------------------------------
 
 define_function_registry!(
     pub enum SpecialFunctions;
     pub const SPECIAL_FUNCTIONS_REGISTRY;
 
     ReadGlobalMemory => {
-        generics: &[GenericParameter{
-            id: GenericIdentifier(0),
-            kind: GenericKind::Type,
-            constraints: &[],
-        }],
-        inputs: &[TypeExpression::Primitive(PrimitiveType::String), TypeExpression::Primitive(PrimitiveType::String)], // namespace, identifier
-        output: TypeExpression::Result { ok: &TypeExpression::Generic(GenericIdentifier(0)), err: &TypeExpression::Primitive(PrimitiveType::String) }
+        |i: &mut GenericTypeInterner| FunctionSignature {
+            generics: vec![generic_parameter(0)],
+            inputs: vec![primitive(PrimitiveType::String), primitive(PrimitiveType::String)],
+            output: result_of(generic(0), primitive(PrimitiveType::String), i),
+        }
     },
     WriteGlobalMemory => {
-        generics: &[GenericParameter{
-            id: GenericIdentifier(0),
-            kind: GenericKind::Type,
-            constraints: &[],
-        }],
-        inputs: &[TypeExpression::Primitive(PrimitiveType::String), TypeExpression::Primitive(PrimitiveType::String), TypeExpression::Generic(GenericIdentifier(0))], // namespace, identifier, value
-        output: TypeExpression::Result {
-            ok: &TypeExpression::Primitive(PrimitiveType::Unit),
-            err: &TypeExpression::Primitive(PrimitiveType::String)
+        |i: &mut GenericTypeInterner| FunctionSignature {
+            generics: vec![generic_parameter(0)],
+            inputs: vec![primitive(PrimitiveType::String), primitive(PrimitiveType::String), generic(0)],
+            output: result_of(primitive(PrimitiveType::Unit), primitive(PrimitiveType::String), i),
         }
     },
     GetInstructionPosition => {
-        generics: &[],
-        inputs: &[],
-        output: TypeExpression::Primitive(PrimitiveType::Integer)
+        |_i: &mut GenericTypeInterner| FunctionSignature {
+            generics: vec![],
+            inputs: vec![],
+            output: primitive(PrimitiveType::Integer),
+        }
     },
     GetModificationNamespaceList => {
-        generics: &[],
-        inputs: &[],
-        output: TypeExpression::Vector(&TypeExpression::Primitive(PrimitiveType::String))
+        |i: &mut GenericTypeInterner| FunctionSignature {
+            generics: vec![],
+            inputs: vec![],
+            output: vector_of(primitive(PrimitiveType::String), i),
+        }
     },
     GetInputSlot => {
-        generics: &[GenericParameter {
-            id: GenericIdentifier(0),
-            kind: GenericKind::Type,
-            constraints: &[],
-        }],
-        inputs: &[TypeExpression::Primitive(PrimitiveType::Integer)], // index
-        output: TypeExpression::Generic(GenericIdentifier(0))
+        |_i: &mut GenericTypeInterner| FunctionSignature {
+            generics: vec![generic_parameter(0)],
+            inputs: vec![primitive(PrimitiveType::Integer)],
+            output: generic(0),
+        }
     },
     WriteOutputSlot => {
-        generics: &[GenericParameter {
-            id: GenericIdentifier(0),
-            kind: GenericKind::Type,
-            constraints: &[],
-        }],
-        inputs: &[TypeExpression::Primitive(PrimitiveType::Integer), TypeExpression::Generic(GenericIdentifier(0))], // index, value
-        output: TypeExpression::Result {
-            ok: &TypeExpression::Primitive(PrimitiveType::Unit),
-            err: &TypeExpression::Primitive(PrimitiveType::String)
+        |i: &mut GenericTypeInterner| FunctionSignature {
+            generics: vec![generic_parameter(0)],
+            inputs: vec![primitive(PrimitiveType::Integer), generic(0)],
+            output: result_of(primitive(PrimitiveType::Unit), primitive(PrimitiveType::String), i),
         }
-    }
+    },
 );
-
-pub struct FunctionSignature {
-    pub generics: &'static [GenericParameter],
-    pub inputs: &'static [TypeExpression<'static>],
-    pub output: TypeExpression<'static>,
-}
-
-pub struct DefinedFunctionSignature {
-    pub inputs: Box<[TypeExpression<'static>]>,
-    pub outputs: Box<[TypeExpression<'static>]>,
-}
-
-pub struct FunctionRegistry<const N: usize> {
-    pub functions: [FunctionSignature; N],
-}

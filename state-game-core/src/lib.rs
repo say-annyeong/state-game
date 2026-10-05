@@ -2,7 +2,6 @@
 #![deny(unused_mut)]
 #![warn(unused_imports)]
 
-mod bound;
 pub mod helper;
 mod mod_metadata;
 

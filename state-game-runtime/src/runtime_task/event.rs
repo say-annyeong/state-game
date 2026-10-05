@@ -92,6 +92,7 @@ impl RuntimeTaskCallEvent {
     }
 }
 
+#[derive(Debug)]
 pub enum RuntimeTaskYield {
     Call {
         function_identifier: FunctionIdentifier,

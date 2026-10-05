@@ -80,13 +80,13 @@ enum ExecutionResult {
 ///
 /// All Slot indices must be contiguous. Using non-contiguous Slot indices
 /// results in undefined behavior.
-pub struct RuntimeTask<'a> {
+pub struct RuntimeTask {
     pub logger_sender: Sender<RuntimeTaskEvent>,
     pub scheduler_sender: Sender<RuntimeTaskCallEvent>,
     pub scheduler_receiver: Receiver<RuntimeTaskCallEvent>,
     pub virtual_machine_identifier: RuntimeTaskIdentifier,
     pub instruction_pointer: usize,
-    pub instructions: Arc<[ConcreteInstruction<'a>]>,
+    pub instructions: Arc<[ConcreteInstruction]>,
     pub input_slots: Vec<Arc<RuntimeValue>>,
     pub output_slots: Vec<Arc<RuntimeValue>>,
     pub slots: Vec<Arc<RuntimeValue>>,
@@ -122,13 +122,13 @@ impl TypeInterner {
 }
  */
 
-impl<'a> RuntimeTask<'a> {
+impl RuntimeTask {
     pub fn new(
         logger_sender: Sender<RuntimeTaskEvent>,
         scheduler_sender: Sender<RuntimeTaskCallEvent>,
         scheduler_receiver: Receiver<RuntimeTaskCallEvent>,
         self_identifier: RuntimeTaskIdentifier,
-        instructions: Arc<[ConcreteInstruction<'a>]>,
+        instructions: Arc<[ConcreteInstruction]>,
         global_memory: Arc<DashMap<(Namespace, Identifier), RuntimeValue>>,
         modification_namespace_list: Arc<[Namespace]>,
         slots_size: usize,
@@ -151,7 +151,7 @@ impl<'a> RuntimeTask<'a> {
         scheduler_sender: Sender<RuntimeTaskCallEvent>,
         scheduler_receiver: Receiver<RuntimeTaskCallEvent>,
         virtual_machine_identifier: RuntimeTaskIdentifier,
-        instructions: Arc<[ConcreteInstruction<'a>]>,
+        instructions: Arc<[ConcreteInstruction]>,
         instruction_pointer: usize,
         global_memory: Arc<DashMap<(Namespace, Identifier), RuntimeValue>>,
         modification_namespace_list: Arc<[Namespace]>,
@@ -178,7 +178,7 @@ impl<'a> RuntimeTask<'a> {
         scheduler_receiver: Receiver<RuntimeTaskCallEvent>,
         virtual_machine_identifier: RuntimeTaskIdentifier,
         instruction_pointer: usize,
-        instructions: Arc<[ConcreteInstruction<'a>]>,
+        instructions: Arc<[ConcreteInstruction]>,
         input_slots: Vec<Arc<RuntimeValue>>,
         slots_size: usize,
     ) -> Self {

@@ -5,7 +5,7 @@ macro_rules! define_function_registry {
         $vis_reg:vis const $registry_name:ident;
 
         $(
-            $function_name:ident => $body:tt
+            $function_name:ident => $builder:tt
         ),* $(,)?
     ) => {
         #[repr(usize)]
@@ -26,9 +26,9 @@ macro_rules! define_function_registry {
 
         $vis_reg const $registry_name: FunctionRegistry<{ $enum_name::COUNT }> =
             FunctionRegistry {
-                functions: [
+                builders: [
                     $(
-                        FunctionSignature $body,
+                        $builder,
                     )*
                 ],
             };

@@ -5,69 +5,14 @@
 pub mod helper;
 mod mod_metadata;
 
+use std::collections::HashMap;
 use std::sync::Arc;
-use serde_json::Value;
-
-pub trait State: Send + Sync {}
 
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
 pub struct Identifier(pub Arc<str>);
 
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
 pub struct Namespace(pub Arc<str>);
-
-// =========================
-// Input Layer
-// =========================
-
-pub trait InputSchema {
-    fn identifier(&self) -> Identifier;
-}
-
-pub trait Input: Send + Sync {
-    fn schema(&self) -> Identifier;
-}
-
-// =========================
-// Execution Context
-// =========================
-
-pub struct Context {
-    pub rng_seed: u64,
-}
-
-// =========================
-// Engine Output
-// =========================
-
-pub enum StepResult {
-    Next(Box<dyn State>),
-    RequiresInput(InputSpace),
-}
-
-pub struct InputSpace {
-    pub schemas: Vec<Box<dyn InputSchema>>,
-}
-
-// =========================
-// Core Engine
-// =========================
-
-pub trait GameEngine {
-    fn step(&self, state: Box<dyn State>, context: Context) -> StepResult;
-}
-
-// =========================
-// Selection Strategy
-// =========================
-
-pub trait SelectionStrategy {
-    fn select(&self, inputs: Vec<(Box<dyn Input>, f64)>, context: &Context) -> Box<dyn Input>;
-}
-
-// =========================
-// Rule Module Registry
-// =========================
 
 /// ModificationSpecifications defines a registry specification.
 ///
@@ -153,78 +98,43 @@ pub trait ModificationSpecifications {
     /// If multiple specifications share the same namespace,
     /// loading fails.
     fn namespace(&self) -> Namespace;
-
-    /// optional implementations
-    fn input_providers(&self) -> &[&dyn InputProvider];
-    fn input_generators(&self) -> &[&dyn InputGenerator];
-    fn input_filters(&self) -> &[&dyn InputFilter];
-    fn input_weights(&self) -> &[&dyn InputWeight];
-    fn transformers(&self) -> &[&dyn StateTransformer];
-    fn terminal_conditions(&self) -> &[&dyn TerminalCondition];
 }
 
-// =========================
-// Input Pipeline
-// =========================
-
-pub trait InputProvider {
-    fn provide(&self, state: &Box<dyn State>) -> Vec<Box<dyn InputSchema>>;
+enum InputVariation {
+    Select(u64),
+    Number(InputVariationNumber),
+    Text(String),
+    Custom(InputVariationCustom)
 }
 
-pub trait InputGenerator {
-    fn generate(&self, schema: &Box<dyn InputSchema>) -> Box<dyn Iterator<Item = Box<dyn Input>>>;
+enum InputVariationNumber {
+    IntegerNumber(i64),
+    RationalNumber(i64, i64),
+    Float(f64),
+    ComplexNumber(i64, i64),
 }
 
-pub trait InputFilter {
-    fn allow(&self, state: &Box<dyn State>, input: &Box<dyn Input>) -> bool;
+struct InputVariationCustom {
+    tag_content: Vec<String>, // namespace:snake_case
+    value: InputVariationCustomValue
 }
 
-pub trait InputWeight {
-    fn weight(&self, state: &Box<dyn State>, input: &Box<dyn Input>) -> f64;
+enum InputVariationCustomValue {
+    Boolean(bool),
+    Number(InputVariationNumber),
+    Text(String),
+    Vector(Vec<Self>),
+    Map(HashMap<String, Self>),
 }
 
-// =========================
-// State Transition
-// =========================
 
-pub trait StateTransformer {
-    fn apply(&self, state: &Box<dyn State>, input: &Box<dyn Input>) -> Option<Box<dyn State>>;
+
+pub trait StateTransition {
+    fn transition(state, input: InputVariation) -> state;
 }
 
-// =========================
-// Terminal Condition
-// =========================
-
-pub trait TerminalCondition {
-    fn is_terminal(&self, state: &Box<dyn State>) -> bool;
-}
-
-// =========================
-// Engine Pipeline (conceptual)
-// =========================
-
-impl dyn GameEngine {
-    fn conceptual_flow(&self) {
-        /*
-        State
-          ↓
-        InputProvider
-          ↓
-        InputSchema
-          ↓
-        InputGenerator
-          ↓
-        Input
-          ↓
-        InputFilter
-          ↓
-        InputWeight
-          ↓
-        SelectionStrategy
-          ↓
-        StateTransformer
-          ↓
-        Next State
-        */
-    }
-}
+/*
+최종 외부 노출 함수
+(State, Input) -> Option<State>를 만드는 함수는 Input을 검증하고, 올바르면 Some, 올바르지 않으면 None
+State -> Vec<InputSpace>을 만드는 함수는 State에서 입력 가능한 모든 공간을 추출, 그리고 그 대상이 다른경우 다른 인덱스를 가짐
+*/

@@ -28,21 +28,21 @@ type SlotMap = HashMap<u64, ConcreteType>;
 /// Try to convert a TypeExpression to a ConcreteType.
 /// Returns None if the expression contains unresolved generics.
 fn try_concrete(
-    expr: &TypeExpression,
+    expression: &TypeExpression,
     generic_interner: &GenericTypeInterner,
     concrete_interner: &mut ConcreteTypeInterner,
 ) -> Option<ConcreteType> {
-    match expr {
+    match expression {
         TypeExpression::Primitive(p) => Some(ConcreteType::Primitive(*p)),
         TypeExpression::Generic(_) => None,
-        TypeExpression::Vector(gid) => {
-            let inner_te = generic_interner.get(*gid)?;
+        TypeExpression::Vector(generic_identifier) => {
+            let inner_te = generic_interner.get(*generic_identifier)?;
             let inner_ct = try_concrete(inner_te, generic_interner, concrete_interner)?;
             let inner_id = concrete_interner.intern(inner_ct);
             Some(ConcreteType::Vector(inner_id))
         }
-        TypeExpression::Option(gid) => {
-            let inner_te = generic_interner.get(*gid)?;
+        TypeExpression::Option(generic_identifier) => {
+            let inner_te = generic_interner.get(*generic_identifier)?;
             let inner_ct = try_concrete(inner_te, generic_interner, concrete_interner)?;
             let inner_id = concrete_interner.intern(inner_ct);
             Some(ConcreteType::Option(inner_id))
@@ -60,38 +60,38 @@ fn try_concrete(
 }
 
 /// Substitute generic parameters in a TypeExpression and convert to ConcreteType.
-/// `param_ids` — ordered list of formal generic parameter IDs.
+/// `parameter_identifiers` — ordered list of formal generic parameter IDs.
 /// `assignments` — concrete type for each parameter (None = unresolved).
 fn substitute(
-    expr: &TypeExpression,
-    param_ids: &[GenericIdentifier],
+    expression: &TypeExpression,
+    parameter_identifiers: &[GenericIdentifier],
     assignments: &[Option<ConcreteType>],
     generic_interner: &GenericTypeInterner,
     concrete_interner: &mut ConcreteTypeInterner,
 ) -> Option<ConcreteType> {
-    match expr {
+    match expression {
         TypeExpression::Primitive(p) => Some(ConcreteType::Primitive(*p)),
         TypeExpression::Generic(id) => {
-            let pos = param_ids.iter().position(|g| g == id)?;
-            assignments.get(pos).and_then(|opt| opt.clone())
+            let position = parameter_identifiers.iter().position(|generic_parameter| generic_parameter == id)?;
+            assignments.get(position).and_then(|option| option.clone())
         }
-        TypeExpression::Vector(gid) => {
-            let inner_te = generic_interner.get(*gid)?;
-            let inner_ct = substitute(inner_te, param_ids, assignments, generic_interner, concrete_interner)?;
+        TypeExpression::Vector(generic_identifier) => {
+            let inner_te = generic_interner.get(*generic_identifier)?;
+            let inner_ct = substitute(inner_te, parameter_identifiers, assignments, generic_interner, concrete_interner)?;
             let inner_id = concrete_interner.intern(inner_ct);
             Some(ConcreteType::Vector(inner_id))
         }
-        TypeExpression::Option(gid) => {
-            let inner_te = generic_interner.get(*gid)?;
-            let inner_ct = substitute(inner_te, param_ids, assignments, generic_interner, concrete_interner)?;
+        TypeExpression::Option(generic_identifier) => {
+            let inner_te = generic_interner.get(*generic_identifier)?;
+            let inner_ct = substitute(inner_te, parameter_identifiers, assignments, generic_interner, concrete_interner)?;
             let inner_id = concrete_interner.intern(inner_ct);
             Some(ConcreteType::Option(inner_id))
         }
         TypeExpression::Result { ok: ok_gid, err: err_gid } => {
             let ok_te = generic_interner.get(*ok_gid)?;
             let err_te = generic_interner.get(*err_gid)?;
-            let ok_ct = substitute(ok_te, param_ids, assignments, generic_interner, concrete_interner)?;
-            let err_ct = substitute(err_te, param_ids, assignments, generic_interner, concrete_interner)?;
+            let ok_ct = substitute(ok_te, parameter_identifiers, assignments, generic_interner, concrete_interner)?;
+            let err_ct = substitute(err_te, parameter_identifiers, assignments, generic_interner, concrete_interner)?;
             let ok_id = concrete_interner.intern(ok_ct);
             let err_id = concrete_interner.intern(err_ct);
             Some(ConcreteType::Result { ok: ok_id, err: err_id })
@@ -104,20 +104,20 @@ fn substitute(
 fn infer_generics(
     template: &TypeExpression,
     concrete: &ConcreteType,
-    param_ids: &[GenericIdentifier],
+    parameter_identifiers: &[GenericIdentifier],
     assignments: &mut Vec<Option<ConcreteType>>,
     generic_interner: &GenericTypeInterner,
     concrete_interner: &ConcreteTypeInterner,
 ) -> bool {
     match (template, concrete) {
         (TypeExpression::Generic(id), _) => {
-            if let Some(pos) = param_ids.iter().position(|g| g == id) {
-                if assignments.len() <= pos {
-                    assignments.resize(pos + 1, None);
+            if let Some(position) = parameter_identifiers.iter().position(|generic_parameter| generic_parameter == id) {
+                if assignments.len() <= position {
+                    assignments.resize(position + 1, None);
                 }
-                match &assignments[pos] {
+                match &assignments[position] {
                     None => {
-                        assignments[pos] = Some(concrete.clone());
+                        assignments[position] = Some(concrete.clone());
                         true
                     }
                     Some(existing) => existing == concrete,
@@ -127,15 +127,15 @@ fn infer_generics(
             }
         }
         (TypeExpression::Primitive(p), ConcreteType::Primitive(c)) => p == c,
-        (TypeExpression::Vector(gid), ConcreteType::Vector(ngid)) => {
-            let Some(inner_te) = generic_interner.get(*gid) else { return false; };
-            let Some(inner_ct) = concrete_interner.get(*ngid) else { return false; };
-            infer_generics(inner_te, inner_ct, param_ids, assignments, generic_interner, concrete_interner)
+        (TypeExpression::Vector(generic_identifier), ConcreteType::Vector(non_generic_identifier)) => {
+            let Some(inner_te) = generic_interner.get(*generic_identifier) else { return false; };
+            let Some(inner_ct) = concrete_interner.get(*non_generic_identifier) else { return false; };
+            infer_generics(inner_te, inner_ct, parameter_identifiers, assignments, generic_interner, concrete_interner)
         }
-        (TypeExpression::Option(gid), ConcreteType::Option(ngid)) => {
-            let Some(inner_te) = generic_interner.get(*gid) else { return false; };
-            let Some(inner_ct) = concrete_interner.get(*ngid) else { return false; };
-            infer_generics(inner_te, inner_ct, param_ids, assignments, generic_interner, concrete_interner)
+        (TypeExpression::Option(generic_identifier), ConcreteType::Option(non_generic_identifier)) => {
+            let Some(inner_te) = generic_interner.get(*generic_identifier) else { return false; };
+            let Some(inner_ct) = concrete_interner.get(*non_generic_identifier) else { return false; };
+            infer_generics(inner_te, inner_ct, parameter_identifiers, assignments, generic_interner, concrete_interner)
         }
         (TypeExpression::Result { ok: ok_gid, err: err_gid },
          ConcreteType::Result { ok: ok_ngid, err: err_ngid }) => {
@@ -143,8 +143,8 @@ fn infer_generics(
             let Some(err_te) = generic_interner.get(*err_gid) else { return false; };
             let Some(ok_ct) = concrete_interner.get(*ok_ngid) else { return false; };
             let Some(err_ct) = concrete_interner.get(*err_ngid) else { return false; };
-            infer_generics(ok_te, ok_ct, param_ids, assignments, generic_interner, concrete_interner)
-                && infer_generics(err_te, err_ct, param_ids, assignments, generic_interner, concrete_interner)
+            infer_generics(ok_te, ok_ct, parameter_identifiers, assignments, generic_interner, concrete_interner)
+                && infer_generics(err_te, err_ct, parameter_identifiers, assignments, generic_interner, concrete_interner)
         }
         _ => false,
     }
@@ -196,19 +196,19 @@ impl<'a> Preprocessing<'a> {
         let mut all_variants: Vec<(FunctionIdentifier, Vec<Variant>)> = Vec::new();
         let mut next_sub_id: FunctionIdentifier = 0;
 
-        for (meta, instructions) in self.expression_function_metadata.iter() {
-            let variant = self.infer_variant(meta, instructions, &mut next_sub_id);
-            all_variants.push((meta.function_identifier, variant));
+        for (metadata, instructions) in self.expression_function_metadata.iter() {
+            let variant = self.infer_variant(metadata, instructions, &mut next_sub_id);
+            all_variants.push((metadata.function_identifier, variant));
         }
 
         // Build output
         let mut result: Vec<(ConcreteFunctionMetadata, Arc<[ConcreteInstruction]>)> = Vec::new();
 
-        for ((func_id, variants), (meta, instructions)) in
+        for ((func_id, variants), (metadata, instructions)) in
             all_variants.iter().zip(self.expression_function_metadata.iter())
         {
             for variant in variants {
-                let max_slot = meta.slot_types.len()
+                let max_slot = metadata.slot_types.len()
                     .max(variant.slot_map.keys().copied().map(|k| k as usize + 1).max().unwrap_or(0));
 
                 let slot_types: Vec<ConcreteType> = (0..max_slot as u64)
@@ -246,7 +246,7 @@ impl<'a> Preprocessing<'a> {
 
     fn infer_variant(
         &mut self,
-        meta: &ExpressionFunctionMetadata,
+        metadata: &ExpressionFunctionMetadata,
         instructions: &[ExpressionInstruction],
         next_sub_id: &mut FunctionIdentifier,
     ) -> Vec<Variant> {
@@ -256,9 +256,9 @@ impl<'a> Preprocessing<'a> {
         let mut slot_map: SlotMap = HashMap::new();
 
         // Seed from declared input types
-        for (i, ty) in meta.input_types.iter().enumerate() {
-            if let Some(ct) = try_concrete(ty, &self.generic_interner, &mut self.concrete_interner) {
-                slot_map.insert(i as u64, ct);
+        for (i, input_type) in metadata.input_types.iter().enumerate() {
+            if let Some(concrete_type) = try_concrete(input_type, &self.generic_interner, &mut self.concrete_interner) {
+                slot_map.insert(i as u64, concrete_type);
             }
         }
 
@@ -269,7 +269,7 @@ impl<'a> Preprocessing<'a> {
         self.pass_generic(instructions, &mut slot_map);
 
         // Resolve input/output types
-        let input_types: Vec<ConcreteType> = meta.input_types.iter().enumerate()
+        let input_types: Vec<ConcreteType> = metadata.input_types.iter().enumerate()
             .map(|(i, _)| {
                 slot_map.get(&(i as u64))
                     .cloned()
@@ -277,9 +277,9 @@ impl<'a> Preprocessing<'a> {
             })
             .collect();
 
-        let output_types: Vec<ConcreteType> = meta.output_types.iter()
-            .map(|ty| {
-                try_concrete(ty, &self.generic_interner, &mut self.concrete_interner)
+        let output_types: Vec<ConcreteType> = metadata.output_types.iter()
+            .map(|expression_type| {
+                try_concrete(expression_type, &self.generic_interner, &mut self.concrete_interner)
                     .unwrap_or(ConcreteType::Primitive(PrimitiveType::Unit))
             })
             .collect();
@@ -289,7 +289,7 @@ impl<'a> Preprocessing<'a> {
 
     // -------------------------------------------------------------------------
     // Pass 1: definite evidence
-    // Priority: Bind > non-generic Call/SpecialCall > explicit generic args
+    // Priority: Bind > non-generic Call/SpecialCall > explicit generic arguments
     // -------------------------------------------------------------------------
 
     fn pass_definite(&mut self, instructions: &[ExpressionInstruction], slot_map: &mut SlotMap) {
@@ -304,32 +304,32 @@ impl<'a> Preprocessing<'a> {
         for instr in instructions.iter() {
             match instr {
                 ExpressionInstruction::Call { function_name, generic_arguments, inputs, output } => {
-                    let mut tmp = self.generic_interner.clone();
-                    if let Some(sig) = FUNCTION_REGISTRY.build(*function_name as usize, &mut tmp) {
-                        self.generic_interner = tmp;
-                        let param_ids: Vec<GenericIdentifier> =
-                            sig.generics.iter().map(|g| g.id).collect();
-                        if param_ids.is_empty() {
-                            self.apply_concrete_sig(&sig.inputs, &sig.output, inputs, *output, slot_map);
+                    let mut temporary_interner = self.generic_interner.clone();
+                    if let Some(signature) = FUNCTION_REGISTRY.build(*function_name as usize, &mut temporary_interner) {
+                        self.generic_interner = temporary_interner;
+                        let parameter_identifiers: Vec<GenericIdentifier> =
+                            signature.generics.iter().map(|generic_parameter| generic_parameter.id).collect();
+                        if parameter_identifiers.is_empty() {
+                            self.apply_concrete_sig(&signature.inputs, &signature.output, inputs, *output, slot_map);
                         } else {
                             self.try_apply_explicit(
-                                &param_ids, &sig.inputs, &sig.output,
+                                &parameter_identifiers, &signature.inputs, &signature.output,
                                 generic_arguments, inputs, *output, slot_map,
                             );
                         }
                     }
                 }
                 ExpressionInstruction::SpecialCall { function_name, generic_arguments, inputs, output } => {
-                    let mut tmp = self.generic_interner.clone();
-                    if let Some(sig) = SPECIAL_FUNCTIONS_REGISTRY.build(*function_name as usize, &mut tmp) {
-                        self.generic_interner = tmp;
-                        let param_ids: Vec<GenericIdentifier> =
-                            sig.generics.iter().map(|g| g.id).collect();
-                        if param_ids.is_empty() {
-                            self.apply_concrete_sig(&sig.inputs, &sig.output, inputs, *output, slot_map);
+                    let mut temporary_interner = self.generic_interner.clone();
+                    if let Some(signature) = SPECIAL_FUNCTIONS_REGISTRY.build(*function_name as usize, &mut temporary_interner) {
+                        self.generic_interner = temporary_interner;
+                        let parameter_identifiers: Vec<GenericIdentifier> =
+                            signature.generics.iter().map(|generic_parameter| generic_parameter.id).collect();
+                        if parameter_identifiers.is_empty() {
+                            self.apply_concrete_sig(&signature.inputs, &signature.output, inputs, *output, slot_map);
                         } else {
                             self.try_apply_explicit(
-                                &param_ids, &sig.inputs, &sig.output,
+                                &parameter_identifiers, &signature.inputs, &signature.output,
                                 generic_arguments, inputs, *output, slot_map,
                             );
                         }
@@ -346,28 +346,28 @@ impl<'a> Preprocessing<'a> {
     /// Apply a fully-concrete (generic-free) signature to the slot map.
     fn apply_concrete_sig(
         &mut self,
-        sig_inputs: &[TypeExpression],
-        sig_output: &TypeExpression,
+        signature_inputs: &[TypeExpression],
+        signature_output: &TypeExpression,
         inputs: &[u64],
         output: u64,
         slot_map: &mut SlotMap,
     ) {
-        for (slot, ty) in inputs.iter().zip(sig_inputs.iter()) {
-            if let Some(ct) = try_concrete(ty, &self.generic_interner, &mut self.concrete_interner) {
-                slot_map.entry(*slot).or_insert(ct);
+        for (slot, expression_type) in inputs.iter().zip(signature_inputs.iter()) {
+            if let Some(concrete_type) = try_concrete(expression_type, &self.generic_interner, &mut self.concrete_interner) {
+                slot_map.entry(*slot).or_insert(concrete_type);
             }
         }
-        if let Some(ct) = try_concrete(sig_output, &self.generic_interner, &mut self.concrete_interner) {
-            slot_map.entry(output).or_insert(ct);
+        if let Some(concrete_type) = try_concrete(signature_output, &self.generic_interner, &mut self.concrete_interner) {
+            slot_map.entry(output).or_insert(concrete_type);
         }
     }
 
     /// Apply explicit generic_arguments (constraint 3: user wrote fn f<Int>(42)).
     fn try_apply_explicit(
         &mut self,
-        param_ids: &[GenericIdentifier],
-        sig_inputs: &[TypeExpression],
-        sig_output: &TypeExpression,
+        parameter_identifiers: &[GenericIdentifier],
+        signature_inputs: &[TypeExpression],
+        signature_output: &TypeExpression,
         explicit: &[TypeExpression],
         inputs: &[u64],
         output: u64,
@@ -377,16 +377,16 @@ impl<'a> Preprocessing<'a> {
             return;
         }
         let assignments: Vec<Option<ConcreteType>> = explicit.iter()
-            .map(|te| try_concrete(te, &self.generic_interner, &mut self.concrete_interner))
+            .map(|type_expression| try_concrete(type_expression, &self.generic_interner, &mut self.concrete_interner))
             .collect();
 
-        for (slot, ty) in inputs.iter().zip(sig_inputs.iter()) {
-            if let Some(ct) = substitute(ty, param_ids, &assignments, &self.generic_interner, &mut self.concrete_interner) {
-                slot_map.entry(*slot).or_insert(ct);
+        for (slot, expression_type) in inputs.iter().zip(signature_inputs.iter()) {
+            if let Some(concrete_type) = substitute(expression_type, parameter_identifiers, &assignments, &self.generic_interner, &mut self.concrete_interner) {
+                slot_map.entry(*slot).or_insert(concrete_type);
             }
         }
-        if let Some(ct) = substitute(sig_output, param_ids, &assignments, &self.generic_interner, &mut self.concrete_interner) {
-            slot_map.entry(output).or_insert(ct);
+        if let Some(concrete_type) = substitute(signature_output, parameter_identifiers, &assignments, &self.generic_interner, &mut self.concrete_interner) {
+            slot_map.entry(output).or_insert(concrete_type);
         }
     }
 
@@ -401,28 +401,28 @@ impl<'a> Preprocessing<'a> {
             for instr in instructions.iter() {
                 match instr {
                     ExpressionInstruction::Call { function_name, generic_arguments, inputs, output } => {
-                        let mut tmp = self.generic_interner.clone();
-                        if let Some(sig) = FUNCTION_REGISTRY.build(*function_name as usize, &mut tmp) {
-                            self.generic_interner = tmp;
-                            let param_ids: Vec<GenericIdentifier> =
-                                sig.generics.iter().map(|g| g.id).collect();
-                            if !param_ids.is_empty() {
-                                self.infer_from_generic_sig(
-                                    &param_ids, &sig.inputs, &sig.output,
+                        let mut temporary_interner = self.generic_interner.clone();
+                        if let Some(signature) = FUNCTION_REGISTRY.build(*function_name as usize, &mut temporary_interner) {
+                            self.generic_interner = temporary_interner;
+                            let parameter_identifiers: Vec<GenericIdentifier> =
+                                signature.generics.iter().map(|generic_parameter| generic_parameter.id).collect();
+                            if !parameter_identifiers.is_empty() {
+                                self.infer_from_generic_signature(
+                                    &parameter_identifiers, &signature.inputs, &signature.output,
                                     generic_arguments, inputs, *output, slot_map,
                                 );
                             }
                         }
                     }
                     ExpressionInstruction::SpecialCall { function_name, generic_arguments, inputs, output } => {
-                        let mut tmp = self.generic_interner.clone();
-                        if let Some(sig) = SPECIAL_FUNCTIONS_REGISTRY.build(*function_name as usize, &mut tmp) {
-                            self.generic_interner = tmp;
-                            let param_ids: Vec<GenericIdentifier> =
-                                sig.generics.iter().map(|g| g.id).collect();
-                            if !param_ids.is_empty() {
-                                self.infer_from_generic_sig(
-                                    &param_ids, &sig.inputs, &sig.output,
+                        let mut temporary_interner = self.generic_interner.clone();
+                        if let Some(signature) = SPECIAL_FUNCTIONS_REGISTRY.build(*function_name as usize, &mut temporary_interner) {
+                            self.generic_interner = temporary_interner;
+                            let parameter_identifiers: Vec<GenericIdentifier> =
+                                signature.generics.iter().map(|generic_parameter| generic_parameter.id).collect();
+                            if !parameter_identifiers.is_empty() {
+                                self.infer_from_generic_signature(
+                                    &parameter_identifiers, &signature.inputs, &signature.output,
                                     generic_arguments, inputs, *output, slot_map,
                                 );
                             }
@@ -442,11 +442,11 @@ impl<'a> Preprocessing<'a> {
     }
 
     /// Infer generic assignments from known slots, then fill remaining slots.
-    fn infer_from_generic_sig(
+    fn infer_from_generic_signature(
         &mut self,
-        param_ids: &[GenericIdentifier],
-        sig_inputs: &[TypeExpression],
-        sig_output: &TypeExpression,
+        parameter_identifiers: &[GenericIdentifier],
+        signature_inputs: &[TypeExpression],
+        signature_output: &TypeExpression,
         explicit: &[TypeExpression],
         inputs: &[u64],
         output: u64,
@@ -454,33 +454,33 @@ impl<'a> Preprocessing<'a> {
     ) {
         // Explicit generic arguments take priority (constraint 3)
         if !explicit.is_empty() {
-            self.try_apply_explicit(param_ids, sig_inputs, sig_output, explicit, inputs, output, slot_map);
+            self.try_apply_explicit(parameter_identifiers, signature_inputs, signature_output, explicit, inputs, output, slot_map);
             return;
         }
 
         // Infer from already-known slots
-        let mut assignments: Vec<Option<ConcreteType>> = vec![None; param_ids.len()];
+        let mut assignments: Vec<Option<ConcreteType>> = vec![None; parameter_identifiers.len()];
 
-        for (slot, ty) in inputs.iter().zip(sig_inputs.iter()) {
-            if let Some(ct) = slot_map.get(slot).cloned() {
-                infer_generics(ty, &ct, param_ids, &mut assignments, &self.generic_interner, &self.concrete_interner);
+        for (slot, expression_type) in inputs.iter().zip(signature_inputs.iter()) {
+            if let Some(concrete_type) = slot_map.get(slot).cloned() {
+                infer_generics(expression_type, &concrete_type, parameter_identifiers, &mut assignments, &self.generic_interner, &self.concrete_interner);
             }
         }
-        if let Some(ct) = slot_map.get(&output).cloned() {
-            infer_generics(sig_output, &ct, param_ids, &mut assignments, &self.generic_interner, &self.concrete_interner);
+        if let Some(concrete_type) = slot_map.get(&output).cloned() {
+            infer_generics(signature_output, &concrete_type, parameter_identifiers, &mut assignments, &self.generic_interner, &self.concrete_interner);
         }
 
         // Fill remaining unknown slots using inferred assignments
-        for (slot, ty) in inputs.iter().zip(sig_inputs.iter()) {
+        for (slot, expression_type) in inputs.iter().zip(signature_inputs.iter()) {
             if !slot_map.contains_key(slot) {
-                if let Some(ct) = substitute(ty, param_ids, &assignments, &self.generic_interner, &mut self.concrete_interner) {
-                    slot_map.insert(*slot, ct);
+                if let Some(concrete_type) = substitute(expression_type, parameter_identifiers, &assignments, &self.generic_interner, &mut self.concrete_interner) {
+                    slot_map.insert(*slot, concrete_type);
                 }
             }
         }
         if !slot_map.contains_key(&output) {
-            if let Some(ct) = substitute(sig_output, param_ids, &assignments, &self.generic_interner, &mut self.concrete_interner) {
-                slot_map.insert(output, ct);
+            if let Some(concrete_type) = substitute(signature_output, parameter_identifiers, &assignments, &self.generic_interner, &mut self.concrete_interner) {
+                slot_map.insert(output, concrete_type);
             }
         }
     }
@@ -502,14 +502,14 @@ impl<'a> Preprocessing<'a> {
         let callee_inputs: Vec<TypeExpression> = callee_meta.input_types.clone();
         let callee_outputs: Vec<TypeExpression> = callee_meta.output_types.clone();
 
-        for (slot, ty) in inputs.iter().zip(callee_inputs.iter()) {
-            if let Some(ct) = try_concrete(ty, &self.generic_interner, &mut self.concrete_interner) {
-                slot_map.entry(*slot).or_insert(ct);
+        for (slot, expression_type) in inputs.iter().zip(callee_inputs.iter()) {
+            if let Some(concrete_type) = try_concrete(expression_type, &self.generic_interner, &mut self.concrete_interner) {
+                slot_map.entry(*slot).or_insert(concrete_type);
             }
         }
-        for (slot, ty) in outputs.iter().zip(callee_outputs.iter()) {
-            if let Some(ct) = try_concrete(ty, &self.generic_interner, &mut self.concrete_interner) {
-                slot_map.entry(*slot).or_insert(ct);
+        for (slot, expression_type) in outputs.iter().zip(callee_outputs.iter()) {
+            if let Some(concrete_type) = try_concrete(expression_type, &self.generic_interner, &mut self.concrete_interner) {
+                slot_map.entry(*slot).or_insert(concrete_type);
             }
         }
     }
@@ -528,14 +528,14 @@ impl<'a> Preprocessing<'a> {
                 Instruction::Bind { slot: *slot, type_name: *type_name, value: value.clone() }
             }
             Instruction::Call { function_name, generic_arguments, inputs, output } => {
-                let mut tmp = self.generic_interner.clone();
-                let sig = FUNCTION_REGISTRY.build(*function_name as usize, &mut tmp);
-                self.generic_interner = tmp;
-                let concrete_generics = if let Some(sig) = sig {
-                    let param_ids: Vec<GenericIdentifier> = sig.generics.iter().map(|g| g.id).collect();
-                    self.resolve_generic_args(
-                        &param_ids, generic_arguments, inputs, *output,
-                        &sig.inputs, &sig.output, &variant.slot_map,
+                let mut temporary_interner = self.generic_interner.clone();
+                let signature = FUNCTION_REGISTRY.build(*function_name as usize, &mut temporary_interner);
+                self.generic_interner = temporary_interner;
+                let concrete_generics = if let Some(signature) = signature {
+                    let parameter_identifiers: Vec<GenericIdentifier> = signature.generics.iter().map(|generic_parameter| generic_parameter.id).collect();
+                    self.resolve_generic_argument(
+                        &parameter_identifiers, generic_arguments, inputs, *output,
+                        &signature.inputs, &signature.output, &variant.slot_map,
                     )
                 } else {
                     vec![]
@@ -548,14 +548,14 @@ impl<'a> Preprocessing<'a> {
                 }
             }
             Instruction::SpecialCall { function_name, generic_arguments, inputs, output } => {
-                let mut tmp = self.generic_interner.clone();
-                let sig = SPECIAL_FUNCTIONS_REGISTRY.build(*function_name as usize, &mut tmp);
-                self.generic_interner = tmp;
-                let concrete_generics = if let Some(sig) = sig {
-                    let param_ids: Vec<GenericIdentifier> = sig.generics.iter().map(|g| g.id).collect();
-                    self.resolve_generic_args(
-                        &param_ids, generic_arguments, inputs, *output,
-                        &sig.inputs, &sig.output, &variant.slot_map,
+                let mut temporary_interner = self.generic_interner.clone();
+                let signature = SPECIAL_FUNCTIONS_REGISTRY.build(*function_name as usize, &mut temporary_interner);
+                self.generic_interner = temporary_interner;
+                let concrete_generics = if let Some(signature) = signature {
+                    let parameter_identifiers: Vec<GenericIdentifier> = signature.generics.iter().map(|generic_parameter| generic_parameter.id).collect();
+                    self.resolve_generic_argument(
+                        &parameter_identifiers, generic_arguments, inputs, *output,
+                        &signature.inputs, &signature.output, &variant.slot_map,
                     )
                 } else {
                     vec![]
@@ -594,39 +594,39 @@ impl<'a> Preprocessing<'a> {
         }
     }
 
-    fn resolve_generic_args(
+    fn resolve_generic_argument(
         &mut self,
-        param_ids: &[GenericIdentifier],
+        parameter_identifiers: &[GenericIdentifier],
         explicit: &[TypeExpression],
         inputs: &[u64],
         output: u64,
-        sig_inputs: &[TypeExpression],
-        sig_output: &TypeExpression,
+        signature_inputs: &[TypeExpression],
+        signature_output: &TypeExpression,
         slot_map: &SlotMap,
     ) -> Vec<ConcreteType> {
-        if param_ids.is_empty() {
+        if parameter_identifiers.is_empty() {
             return vec![];
         }
-        // Explicit generic args take priority (constraint 3)
+        // Explicit generic arguments take priority (constraint 3)
         if !explicit.is_empty() {
             return explicit.iter()
-                .filter_map(|te| try_concrete(te, &self.generic_interner, &mut self.concrete_interner))
+                .filter_map(|type_expression| try_concrete(type_expression, &self.generic_interner, &mut self.concrete_interner))
                 .collect();
         }
 
-        let mut assignments: Vec<Option<ConcreteType>> = vec![None; param_ids.len()];
+        let mut assignments: Vec<Option<ConcreteType>> = vec![None; parameter_identifiers.len()];
 
-        for (slot, ty) in inputs.iter().zip(sig_inputs.iter()) {
-            if let Some(ct) = slot_map.get(slot).cloned() {
-                infer_generics(ty, &ct, param_ids, &mut assignments, &self.generic_interner, &self.concrete_interner);
+        for (slot, expression_type) in inputs.iter().zip(signature_inputs.iter()) {
+            if let Some(concrete_type) = slot_map.get(slot).cloned() {
+                infer_generics(expression_type, &concrete_type, parameter_identifiers, &mut assignments, &self.generic_interner, &self.concrete_interner);
             }
         }
-        if let Some(ct) = slot_map.get(&output).cloned() {
-            infer_generics(sig_output, &ct, param_ids, &mut assignments, &self.generic_interner, &self.concrete_interner);
+        if let Some(concrete_type) = slot_map.get(&output).cloned() {
+            infer_generics(signature_output, &concrete_type, parameter_identifiers, &mut assignments, &self.generic_interner, &self.concrete_interner);
         }
 
         assignments.into_iter()
-            .map(|opt| opt.unwrap_or(ConcreteType::Primitive(PrimitiveType::Unit)))
+            .map(|option| option.unwrap_or(ConcreteType::Primitive(PrimitiveType::Unit)))
             .collect()
     }
 }

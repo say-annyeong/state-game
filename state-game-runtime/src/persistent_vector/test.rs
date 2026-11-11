@@ -81,9 +81,9 @@ mod tests {
         assert!(vec.set(100, 500).is_err());
 
         // update 검증 (값 기반 계산 업데이트)
-        let vec_updated = vec.update(5, |val| val + 1).unwrap();
+        let vec_updated = vec.update(5, |value| value + 1).unwrap();
         assert_eq!(*vec_updated.get(5).unwrap(), 51);
-        assert!(vec.update(100, |val| val + 1).is_err());
+        assert!(vec.update(100, |value| value + 1).is_err());
     }
 
     // 5. Pop 기능 및 트리 축소 검증
@@ -231,7 +231,7 @@ mod stress_tests {
 
     #[test]
     fn test_random_operations_against_vec() {
-        let mut pv = PersistentVector::new();
+        let mut persistent_vector = PersistentVector::new();
         let mut vec = Vec::new();
 
         let mut seed = 0x12345678u64;
@@ -250,7 +250,7 @@ mod stress_tests {
                 0 => {
                     let value = rand(&mut seed) as i32;
 
-                    pv = pv.push(Arc::new(value));
+                    persistent_vector = persistent_vector.push(Arc::new(value));
                     vec.push(value);
                 }
 
@@ -260,7 +260,7 @@ mod stress_tests {
                         let index = rand(&mut seed) % vec.len();
                         let value = rand(&mut seed) as i32;
 
-                        pv = pv.set(index, value).unwrap();
+                        persistent_vector = persistent_vector.set(index, value).unwrap();
                         vec[index] = value;
                     }
                 }
@@ -268,7 +268,7 @@ mod stress_tests {
                 // pop
                 2 => {
                     if !vec.is_empty() {
-                        pv = pv.pop().unwrap();
+                        persistent_vector = persistent_vector.pop().unwrap();
                         vec.pop();
                     }
                 }
@@ -278,13 +278,13 @@ mod stress_tests {
                     if !vec.is_empty() {
                         let index = rand(&mut seed) % vec.len();
 
-                        assert_eq!(*pv.get(index).unwrap(), vec[index]);
+                        assert_eq!(*persistent_vector.get(index).unwrap(), vec[index]);
                     }
                 }
 
                 // iterator check
                 4 => {
-                    let collected: Vec<_> = pv.iter().map(|x| *x).collect();
+                    let collected: Vec<_> = persistent_vector.iter().map(|x| *x).collect();
 
                     assert_eq!(collected, vec);
                 }
@@ -292,31 +292,31 @@ mod stress_tests {
                 _ => unreachable!(),
             }
 
-            assert_eq!(pv.len(), vec.len());
+            assert_eq!(persistent_vector.len(), vec.len());
 
             for i in 0..vec.len() {
-                assert_eq!(*pv.get(i).unwrap(), vec[i]);
+                assert_eq!(*persistent_vector.get(i).unwrap(), vec[i]);
             }
         }
     }
 
     #[test]
     fn test_large_tree_integrity() {
-        let mut pv = PersistentVector::new();
+        let mut persistent_vector = PersistentVector::new();
 
         let count = 100_000;
 
         for i in 0..count {
-            pv = pv.push(Arc::new(i));
+            persistent_vector = persistent_vector.push(Arc::new(i));
         }
 
-        assert_eq!(pv.len(), count);
+        assert_eq!(persistent_vector.len(), count);
 
         for i in 0..count {
-            assert_eq!(*pv.get(i).unwrap(), i);
+            assert_eq!(*persistent_vector.get(i).unwrap(), i);
         }
 
-        let collected: Vec<_> = pv.iter().map(|x| *x).collect();
+        let collected: Vec<_> = persistent_vector.iter().map(|x| *x).collect();
 
         assert_eq!(collected.len(), count);
 
@@ -366,13 +366,13 @@ mod stress_tests {
 
     #[test]
     fn test_iterator_exact_size_and_double_end() {
-        let mut pv = PersistentVector::new();
+        let mut persistent_vector = PersistentVector::new();
 
         for i in 0..100 {
-            pv = pv.push(Arc::new(i));
+            persistent_vector = persistent_vector.push(Arc::new(i));
         }
 
-        let mut iter = pv.iter();
+        let mut iter = persistent_vector.iter();
 
         assert_eq!(iter.len(), 100);
 
@@ -389,16 +389,16 @@ mod stress_tests {
 
     #[test]
     fn test_sort_preserves_original() {
-        let mut pv = PersistentVector::new();
+        let mut persistent_vector = PersistentVector::new();
 
         for i in [5, 1, 9, 3, 7] {
-            pv = pv.push(Arc::new(i));
+            persistent_vector = persistent_vector.push(Arc::new(i));
         }
 
-        let sorted = pv.sort();
+        let sorted = persistent_vector.sort();
 
         assert_eq!(
-            pv.iter().map(|x| *x).collect::<Vec<_>>(),
+            persistent_vector.iter().map(|x| *x).collect::<Vec<_>>(),
             vec![5, 1, 9, 3, 7]
         );
 

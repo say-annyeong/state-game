@@ -93,8 +93,8 @@ impl<const N: usize> FunctionRegistry<N> {
 // Helper used in builders below
 // ---------------------------------------------------------------------------
 
-fn primitive(ty: PrimitiveType) -> TypeExpression {
-    TypeExpression::Primitive(ty)
+fn primitive(primitive_type: PrimitiveType) -> TypeExpression {
+    TypeExpression::Primitive(primitive_type)
 }
 
 fn vector_of(inner: TypeExpression, interner: &mut GenericTypeInterner) -> TypeExpression {

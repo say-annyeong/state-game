@@ -1,10 +1,14 @@
-use std::{collections::HashMap, ops::Deref, sync::Arc};
-use std::num::{ParseFloatError, ParseIntError};
-use std::str::ParseBoolError;
+use std::{
+    collections::HashMap,
+    ops::Deref,
+    sync::Arc,
+    num::{ParseFloatError, ParseIntError},
+    str::ParseBoolError
+};
 use crossbeam_channel::{Receiver, Sender};
 use dashmap::{DashMap, Entry, try_result::TryResult};
 
-use state_game_core::{Identifier, Namespace, helper::try_until};
+use state_game_core::{Identifier, Namespace};
 
 use crate::{
     persistent_vector::InnerPersistentVector,
@@ -14,13 +18,18 @@ use crate::{
             RuntimeTaskLogLevel, RuntimeTaskTrap, RuntimeTaskYield, StateChange, TrapReason,
         },
         instruction::{
-            FunctionIdentifier, Functions, Instruction, Literal, RuntimeTaskIdentifier, Slot,
+            FunctionIdentifier,
+            Functions,
+            Instruction,
+            Literal,
+            RuntimeTaskIdentifier,
+            Slot,
             SpecialFunctions,
+            ConcreteInstruction
         },
-    },
+        types::{PrimitiveType, RuntimeValue}
+    }
 };
-use crate::runtime_task::instruction::ConcreteInstruction;
-use crate::runtime_task::types::{PrimitiveType, RuntimeValue};
 
 // ── Instruction pointer step ─────────────────────────────────────────────────
 
@@ -41,8 +50,6 @@ enum ExecutionResult {
         outputs: Vec<Arc<RuntimeValue>>,
     },
 }
-
-// ── Virtual Machine ──────────────────────────────────────────────────────────
 
 /// A RuntimeTask represents a single execution context.
 ///
@@ -103,15 +110,15 @@ pub struct TypeInterner {
 }
 
 impl TypeInterner {
-    pub fn intern(&mut self, ty: ConcreteType) -> TypeId {
-        if let Some(id) = self.map.get(&ty) {
+    pub fn intern(&mut self, concrete_type: ConcreteType) -> TypeId {
+        if let Some(id) = self.map.get(&concrete_type) {
             return *id;
         }
 
         let id = TypeId(self.types.len() as u32);
 
-        self.types.push(ty.clone());
-        self.map.insert(ty, id);
+        self.types.push(concrete_type.clone());
+        self.map.insert(concrete_type, id);
 
         id
     }
@@ -348,11 +355,11 @@ impl RuntimeTask {
                 output,
                 ..
             } => {
-                let args = inputs
+                let arguments = inputs
                     .iter()
                     .map(|s| self.read(*s))
                     .collect::<Result<Vec<_>, _>>()?;
-                let result = self.dispatch(*function_name, &args)?;
+                let result = self.dispatch(*function_name, &arguments)?;
                 self.write(*output, result);
                 Ok(ExecutionResult::Advance)
             }
@@ -408,11 +415,11 @@ impl RuntimeTask {
                 output,
                 ..
             } => {
-                let args = inputs
+                let arguments = inputs
                     .iter()
                     .map(|s| self.read(*s))
                     .collect::<Result<Vec<_>, _>>()?;
-                let result = self.special_dispatch(*function_name, &args)?;
+                let result = self.special_dispatch(*function_name, &arguments)?;
                 self.write(*output, Arc::new(result));
                 Ok(ExecutionResult::Advance)
             }
@@ -456,242 +463,242 @@ impl RuntimeTask {
 
     // ── Function dispatch ─────────────────────────────────────────────────────
 
-    fn dispatch(&self, func: Functions, args: &[Arc<RuntimeValue>]) -> Result<Arc<RuntimeValue>, RuntimeTaskTrap> {
+    fn dispatch(&self, func: Functions, arguments: &[Arc<RuntimeValue>]) -> Result<Arc<RuntimeValue>, RuntimeTaskTrap> {
         match func {
             // ── Integer arithmetic ────────────────────────────────────────────
             Functions::AddInteger => {
-                if args.len() != 2 {
+                if arguments.len() != 2 {
                     return Err(self.trap(TrapReason::VerifierBug(
                         "Argument count Mismatch".to_string(),
                     )));
                 }
-                Ok(Arc::new(RuntimeValue::Integer(args[0].integer().wrapping_add(*args[1].integer()))))
+                Ok(Arc::new(RuntimeValue::Integer(arguments[0].integer().wrapping_add(*arguments[1].integer()))))
             }
             Functions::SubInteger => {
-                if args.len() != 2 {
+                if arguments.len() != 2 {
                     return Err(self.trap(TrapReason::VerifierBug(
                         "Argument count Mismatch".to_string(),
                     )));
                 }
-                Ok(Arc::new(RuntimeValue::Integer(args[0].integer().wrapping_sub(*args[1].integer()))))
+                Ok(Arc::new(RuntimeValue::Integer(arguments[0].integer().wrapping_sub(*arguments[1].integer()))))
             }
             Functions::MulInteger => {
-                if args.len() != 2 {
+                if arguments.len() != 2 {
                     return Err(self.trap(TrapReason::VerifierBug(
                         "Argument count Mismatch".to_string(),
                     )));
                 }
-                Ok(Arc::new(RuntimeValue::Integer(args[0].integer().wrapping_mul(*args[1].integer()))))
+                Ok(Arc::new(RuntimeValue::Integer(arguments[0].integer().wrapping_mul(*arguments[1].integer()))))
             }
             Functions::DivInteger => {
-                if args.len() != 2 {
+                if arguments.len() != 2 {
                     return Err(self.trap(TrapReason::VerifierBug(
                         "Argument count Mismatch".to_string(),
                     )));
                 }
-                let rhs = args[1].integer();
-                if *rhs == 0 {
+                let right_hand_side = arguments[1].integer();
+                if *right_hand_side == 0 {
                     return Err(self.trap(TrapReason::DivisionByZero));
                 }
-                Ok(Arc::new(RuntimeValue::Integer(args[0].integer().wrapping_div(*rhs))))
+                Ok(Arc::new(RuntimeValue::Integer(arguments[0].integer().wrapping_div(*right_hand_side))))
             }
             Functions::RemInteger => {
-                if args.len() != 2 {
+                if arguments.len() != 2 {
                     return Err(self.trap(TrapReason::VerifierBug(
                         "Argument count Mismatch".to_string(),
                     )));
                 }
-                let rhs = args[1].integer();
-                if *rhs == 0 {
+                let right_hand_side = arguments[1].integer();
+                if *right_hand_side == 0 {
                     return Err(self.trap(TrapReason::DivisionByZero));
                 }
-                Ok(Arc::new(RuntimeValue::Integer(args[0].integer().wrapping_rem(*rhs))))
+                Ok(Arc::new(RuntimeValue::Integer(arguments[0].integer().wrapping_rem(*right_hand_side))))
             }
             Functions::RemEuclidInteger => {
-                if args.len() != 2 {
+                if arguments.len() != 2 {
                     return Err(self.trap(TrapReason::VerifierBug(
                         "Argument count Mismatch".to_string(),
                     )));
                 }
-                let rhs = args[1].integer();
-                if *rhs == 0 {
+                let right_hand_side = arguments[1].integer();
+                if *right_hand_side == 0 {
                     return Err(self.trap(TrapReason::DivisionByZero));
                 }
-                Ok(Arc::new(RuntimeValue::Integer(args[0].integer().wrapping_rem_euclid(*rhs))))
+                Ok(Arc::new(RuntimeValue::Integer(arguments[0].integer().wrapping_rem_euclid(*right_hand_side))))
             }
             Functions::PowInteger => {
-                if args.len() != 2 {
+                if arguments.len() != 2 {
                     return Err(self.trap(TrapReason::VerifierBug(
                         "Argument count Mismatch".to_string(),
                     )));
                 }
-                let base = args[0].integer();
-                let exp = args[1].integer();
+                let base = arguments[0].integer();
+                let exp = arguments[1].integer();
                 let exp_u = u32::try_from(*exp).unwrap_or(0);
                 Ok(Arc::new(RuntimeValue::Integer(base.wrapping_pow(exp_u))))
             }
 
             // ── Float arithmetic ──────────────────────────────────────────────
             Functions::AddFloat => {
-                if args.len() != 2 {
+                if arguments.len() != 2 {
                     return Err(self.trap(TrapReason::VerifierBug(
                         "Argument count Mismatch".to_string(),
                     )));
                 }
-                Ok(Arc::new(RuntimeValue::Float(args[0].float() + args[1].float())))
+                Ok(Arc::new(RuntimeValue::Float(arguments[0].float() + arguments[1].float())))
             }
             Functions::SubFloat => {
-                if args.len() != 2 {
+                if arguments.len() != 2 {
                     return Err(self.trap(TrapReason::VerifierBug(
                         "Argument count Mismatch".to_string(),
                     )));
                 }
-                Ok(Arc::new(RuntimeValue::Float(args[0].float() - args[1].float())))
+                Ok(Arc::new(RuntimeValue::Float(arguments[0].float() - arguments[1].float())))
             }
             Functions::MulFloat => {
-                if args.len() != 2 {
+                if arguments.len() != 2 {
                     return Err(self.trap(TrapReason::VerifierBug(
                         "Argument count Mismatch".to_string(),
                     )));
                 }
-                Ok(Arc::new(RuntimeValue::Float(args[0].float() * args[1].float())))
+                Ok(Arc::new(RuntimeValue::Float(arguments[0].float() * arguments[1].float())))
             }
             Functions::DivFloat => {
-                if args.len() != 2 {
+                if arguments.len() != 2 {
                     return Err(self.trap(TrapReason::VerifierBug(
                         "Argument count Mismatch".to_string(),
                     )));
                 }
-                Ok(Arc::new(RuntimeValue::Float(args[0].float() / args[1].float())))
+                Ok(Arc::new(RuntimeValue::Float(arguments[0].float() / arguments[1].float())))
             }
             Functions::PowFloat => {
-                if args.len() != 2 {
+                if arguments.len() != 2 {
                     return Err(self.trap(TrapReason::VerifierBug(
                         "Argument count Mismatch".to_string(),
                     )));
                 }
-                Ok(Arc::new(RuntimeValue::Float(args[0].float().powf(*args[1].float()))))
+                Ok(Arc::new(RuntimeValue::Float(arguments[0].float().powf(*arguments[1].float()))))
             }
 
             // ── Integer comparisons ───────────────────────────────────────────
             Functions::EqualInteger => {
-                if args.len() != 2 {
+                if arguments.len() != 2 {
                     return Err(self.trap(TrapReason::VerifierBug(
                         "Argument count Mismatch".to_string(),
                     )));
                 }
-                Ok(Arc::new(RuntimeValue::Boolean(args[0].integer() == args[1].integer())))
+                Ok(Arc::new(RuntimeValue::Boolean(arguments[0].integer() == arguments[1].integer())))
             }
             Functions::NotEqualInteger => {
-                if args.len() != 2 {
+                if arguments.len() != 2 {
                     return Err(self.trap(TrapReason::VerifierBug(
                         "Argument count Mismatch".to_string(),
                     )));
                 }
-                Ok(Arc::new(RuntimeValue::Boolean(args[0].integer() != args[1].integer())))
+                Ok(Arc::new(RuntimeValue::Boolean(arguments[0].integer() != arguments[1].integer())))
             }
             Functions::GreaterThanInteger => {
-                if args.len() != 2 {
+                if arguments.len() != 2 {
                     return Err(self.trap(TrapReason::VerifierBug(
                         "Argument count Mismatch".to_string(),
                     )));
                 }
-                Ok(Arc::new(RuntimeValue::Boolean(args[0].integer() > args[1].integer())))
+                Ok(Arc::new(RuntimeValue::Boolean(arguments[0].integer() > arguments[1].integer())))
             }
             Functions::LessThanInteger => {
-                if args.len() != 2 {
+                if arguments.len() != 2 {
                     return Err(self.trap(TrapReason::VerifierBug(
                         "Argument count Mismatch".to_string(),
                     )));
                 }
-                Ok(Arc::new(RuntimeValue::Boolean(args[0].integer() < args[1].integer())))
+                Ok(Arc::new(RuntimeValue::Boolean(arguments[0].integer() < arguments[1].integer())))
             }
 
             // ── Float comparisons ─────────────────────────────────────────────
             Functions::GreaterThanFloat => {
-                if args.len() != 2 {
+                if arguments.len() != 2 {
                     return Err(self.trap(TrapReason::VerifierBug(
                         "Argument count Mismatch".to_string(),
                     )));
                 }
-                Ok(Arc::new(RuntimeValue::Boolean(args[0].float() > args[1].float())))
+                Ok(Arc::new(RuntimeValue::Boolean(arguments[0].float() > arguments[1].float())))
             }
             Functions::LessThanFloat => {
-                if args.len() != 2 {
+                if arguments.len() != 2 {
                     return Err(self.trap(TrapReason::VerifierBug(
                         "Argument count Mismatch".to_string(),
                     )));
                 }
-                Ok(Arc::new(RuntimeValue::Boolean(args[0].float() < args[1].float())))
+                Ok(Arc::new(RuntimeValue::Boolean(arguments[0].float() < arguments[1].float())))
             }
 
             // ── Boolean logic ─────────────────────────────────────────────────
             Functions::Not => {
-                if args.len() != 1 {
+                if arguments.len() != 1 {
                     return Err(self.trap(TrapReason::VerifierBug(
                         "Argument count Mismatch".to_string(),
                     )));
                 }
-                Ok(Arc::new(RuntimeValue::Boolean(!args[0].boolean())))
+                Ok(Arc::new(RuntimeValue::Boolean(!arguments[0].boolean())))
             }
             Functions::And => {
-                if args.len() != 2 {
+                if arguments.len() != 2 {
                     return Err(self.trap(TrapReason::VerifierBug(
                         "Argument count Mismatch".to_string(),
                     )));
                 }
-                Ok(Arc::new(RuntimeValue::Boolean(*args[0].boolean() && *args[1].boolean())))
+                Ok(Arc::new(RuntimeValue::Boolean(*arguments[0].boolean() && *arguments[1].boolean())))
             }
             Functions::Or => {
-                if args.len() != 2 {
+                if arguments.len() != 2 {
                     return Err(self.trap(TrapReason::VerifierBug(
                         "Argument count Mismatch".to_string(),
                     )));
                 }
-                Ok(Arc::new(RuntimeValue::Boolean(*args[0].boolean() || *args[1].boolean())))
+                Ok(Arc::new(RuntimeValue::Boolean(*arguments[0].boolean() || *arguments[1].boolean())))
             }
             Functions::Xor => {
-                if args.len() != 2 {
+                if arguments.len() != 2 {
                     return Err(self.trap(TrapReason::VerifierBug(
                         "Argument count Mismatch".to_string(),
                     )));
                 }
-                Ok(Arc::new(RuntimeValue::Boolean(*args[0].boolean() ^ *args[1].boolean())))
+                Ok(Arc::new(RuntimeValue::Boolean(*arguments[0].boolean() ^ *arguments[1].boolean())))
             }
 
             // ── String operations ─────────────────────────────────────────────
             Functions::EqualString => {
-                if args.len() != 2 {
+                if arguments.len() != 2 {
                     return Err(self.trap(TrapReason::VerifierBug(
                         "Argument count Mismatch".to_string(),
                     )));
                 }
-                Ok(Arc::new(RuntimeValue::Boolean(args[0].string() == args[1].string())))
+                Ok(Arc::new(RuntimeValue::Boolean(arguments[0].string() == arguments[1].string())))
             }
             Functions::StringLength => {
-                if args.len() != 1 {
+                if arguments.len() != 1 {
                     return Err(self.trap(TrapReason::VerifierBug(
                         "Argument count Mismatch".to_string(),
                     )));
                 }
-                Ok(Arc::new(RuntimeValue::Integer(args[0].string().chars().count() as i64)))
+                Ok(Arc::new(RuntimeValue::Integer(arguments[0].string().chars().count() as i64)))
             }
             Functions::StringGetChar => {
-                if args.len() != 2 {
+                if arguments.len() != 2 {
                     return Err(self.trap(TrapReason::VerifierBug(
                         "Argument count Mismatch".to_string(),
                     )));
                 }
-                let s = args[0].string();
-                let idx = args[1].integer();
+                let s = arguments[0].string();
+                let index = arguments[1].integer();
                 let chars: Vec<char> = s.chars().collect();
                 let len = chars.len();
-                let i = usize::try_from(*idx)
+                let i = usize::try_from(*index)
                     .ok()
                     .filter(|&i| i < len)
                     .ok_or_else(|| {
                         self.trap(TrapReason::StringIndexOutOfBounds {
-                            index: *idx,
+                            index: *index,
                             length: len,
                         })
                     })?;
@@ -700,20 +707,20 @@ impl RuntimeTask {
 
             // ── Vector get ────────────────────────────────────────────────────
             Functions::VectorGet => {
-                if args.len() != 2 {
+                if arguments.len() != 2 {
                     return Err(self.trap(TrapReason::VerifierBug(
                         "Argument count Mismatch".to_string(),
                     )));
                 }
-                let v = args[0].vector();
-                let idx = args[1].integer();
+                let v = arguments[0].vector();
+                let index = arguments[1].integer();
                 let len = v.len();
-                let i = usize::try_from(*idx)
+                let i = usize::try_from(*index)
                     .ok()
                     .filter(|&i| i < len)
                     .ok_or_else(|| {
                         self.trap(TrapReason::IndexOutOfBounds {
-                            index: *idx,
+                            index: *index,
                             length: len,
                         })
                     })?;
@@ -723,36 +730,36 @@ impl RuntimeTask {
 
             // ── Vector init ───────────────────────────────────────────────────
             Functions::VectorNew => {
-                if args.len() != 1 {
+                if arguments.len() != 1 {
                     return Err(self.trap(TrapReason::VerifierBug(
                         "Argument count Mismatch".to_string(),
                     )));
                 }
                 let vector = InnerPersistentVector::new();
-                let result = vector.push(args[0].clone());
+                let result = vector.push(arguments[0].clone());
                 Ok(Arc::new(RuntimeValue::Vector(result)))
             }
 
             // ── Vector push ───────────────────────────────────────────────────
             Functions::VectorPush => {
-                if args.len() != 2 {
+                if arguments.len() != 2 {
                     return Err(self.trap(TrapReason::VerifierBug(
                         "Argument count Mismatch".to_string(),
                     )));
                 }
-                let v = args[0].vector();
-                let v = v.push((args[1]).clone());
+                let v = arguments[0].vector();
+                let v = v.push((arguments[1]).clone());
                 Ok(Arc::new(RuntimeValue::Vector(v)))
             }
 
             // ── Vector pop ────────────────────────────────────────────────────
             Functions::VectorPop => {
-                if args.len() != 1 {
+                if arguments.len() != 1 {
                     return Err(self.trap(TrapReason::VerifierBug(
                         "Argument count Mismatch".to_string(),
                     )));
                 }
-                let v = args[0].vector();
+                let v = arguments[0].vector();
                 if v.is_empty() {
                     return Err(self.trap(TrapReason::IndexOutOfBounds {
                         index: -1,
@@ -765,46 +772,46 @@ impl RuntimeTask {
 
             // ── Option / Result inspection ────────────────────────────────────
             Functions::IsSome => {
-                if args.len() != 1 {
+                if arguments.len() != 1 {
                     return Err(self.trap(TrapReason::VerifierBug(
                         "Argument count Mismatch".to_string(),
                     )));
                 }
-                Ok(Arc::new(RuntimeValue::Boolean(matches!(&*args[0], RuntimeValue::Option(Some(_))))))
+                Ok(Arc::new(RuntimeValue::Boolean(matches!(&*arguments[0], RuntimeValue::Option(Some(_))))))
             }
             Functions::IsNone => {
-                if args.len() != 1 {
+                if arguments.len() != 1 {
                     return Err(self.trap(TrapReason::VerifierBug(
                         "Argument count Mismatch".to_string(),
                     )));
                 }
-                Ok(Arc::new(RuntimeValue::Boolean(matches!(&*args[0], RuntimeValue::Option(None)))))
+                Ok(Arc::new(RuntimeValue::Boolean(matches!(&*arguments[0], RuntimeValue::Option(None)))))
             }
             Functions::IsOk => {
-                if args.len() != 1 {
+                if arguments.len() != 1 {
                     return Err(self.trap(TrapReason::VerifierBug(
                         "Argument count Mismatch".to_string(),
                     )));
                 }
-                Ok(Arc::new(RuntimeValue::Boolean(matches!(&*args[0], RuntimeValue::Result(Ok(_))))))
+                Ok(Arc::new(RuntimeValue::Boolean(matches!(&*arguments[0], RuntimeValue::Result(Ok(_))))))
             }
             Functions::IsErr => {
-                if args.len() != 1 {
+                if arguments.len() != 1 {
                     return Err(self.trap(TrapReason::VerifierBug(
                         "Argument count Mismatch".to_string(),
                     )));
                 }
-                Ok(Arc::new(RuntimeValue::Boolean(matches!(&*args[0], RuntimeValue::Result(Err(_))))))
+                Ok(Arc::new(RuntimeValue::Boolean(matches!(&*arguments[0], RuntimeValue::Result(Err(_))))))
             }
 
             // ── UnwrapSome ────────────────────────────────────────────────────
             Functions::UnwrapSome => {
-                if args.len() != 1 {
+                if arguments.len() != 1 {
                     return Err(self.trap(TrapReason::VerifierBug(
                         "Argument count Mismatch".to_string(),
                     )));
                 }
-                match &*args[0] {
+                match &*arguments[0] {
                     RuntimeValue::Option(Some(inner)) => Ok(inner.clone()),
                     RuntimeValue::Option(None) => Err(self.trap(TrapReason::UnwrapNone)),
                     _ => Err(self.trap(TrapReason::VerifierBug("Type Mismatch".to_string()))),
@@ -813,12 +820,12 @@ impl RuntimeTask {
 
             // ── UnwrapOk ──────────────────────────────────────────────────────
             Functions::UnwrapOk => {
-                if args.len() != 1 {
+                if arguments.len() != 1 {
                     return Err(self.trap(TrapReason::VerifierBug(
                         "Argument count Mismatch".to_string(),
                     )));
                 }
-                match &*args[0] {
+                match &*arguments[0] {
                     RuntimeValue::Result(Ok(inner)) => Ok(inner.clone()),
                     RuntimeValue::Result(Err(_)) => Err(self.trap(TrapReason::UnwrapErrOnOk)),
                     _ => Err(self.trap(TrapReason::VerifierBug("Type Mismatch".to_string()))),
@@ -827,37 +834,37 @@ impl RuntimeTask {
 
             // ── UnwrapErr ─────────────────────────────────────────────────────
             Functions::UnwrapErr => {
-                if args.len() != 1 {
+                if arguments.len() != 1 {
                     return Err(self.trap(TrapReason::VerifierBug(
                         "Argument count Mismatch".to_string(),
                     )));
                 }
-                match &*args[0] {
+                match &*arguments[0] {
                     RuntimeValue::Result(Err(inner)) => Ok(inner.clone()),
                     RuntimeValue::Result(Ok(_)) => Err(self.trap(TrapReason::UnwrapOkOnErr)),
                     _ => Err(self.trap(TrapReason::VerifierBug("Type Mismatch".to_string()))),
                 }
             }
             Functions::StringCombine => {
-                let string1 = args[0].string();
-                let string2 = args[1].string();
+                let string1 = arguments[0].string();
+                let string2 = arguments[1].string();
                 let result: String = string1.chars().chain(string2.chars()).collect();
                 Ok(Arc::new(RuntimeValue::String(Arc::from(result))))
             }
             Functions::StringToInteger => {
-                let string = args[0].string();
+                let string = arguments[0].string();
                 let parse: Result<i64, String> = string.parse().map_err(|error: ParseIntError| error.to_string());
                 let result = parse.map(|value| Arc::new(RuntimeValue::Integer(value))).map_err(|error| Arc::new(RuntimeValue::String(Arc::from(error))));
                 Ok(Arc::new(RuntimeValue::Result(result)))
             }
             Functions::StringToFloat => {
-                let string = args[0].string();
+                let string = arguments[0].string();
                 let parse: Result<f64, String> = string.parse().map_err(|error: ParseFloatError| error.to_string());
                 let result = parse.map(|value| Arc::new(RuntimeValue::Float(value))).map_err(|error| Arc::new(RuntimeValue::String(Arc::from(error))));
                 Ok(Arc::new(RuntimeValue::Result(result)))
             }
             Functions::StringToBoolean => {
-                let string = args[0].string();
+                let string = arguments[0].string();
                 let parse: Result<bool, String> = string.parse().map_err(|error: ParseBoolError| error.to_string());
                 let result = parse.map(|value| Arc::new(RuntimeValue::Boolean(value))).map_err(|error| Arc::new(RuntimeValue::String(Arc::from(error))));
                 Ok(Arc::new(RuntimeValue::Result(result)))
@@ -1002,8 +1009,8 @@ impl RuntimeTask {
 
 /// Returns `None` if the literal variant does not match the declared type,
 /// which indicates the instruction stream was not verified before execution.
-fn parse_literal(ty: &PrimitiveType, lit: &Literal) -> Option<RuntimeValue> {
-    match (ty, lit) {
+fn parse_literal(primitive_type: &PrimitiveType, lit: &Literal) -> Option<RuntimeValue> {
+    match (primitive_type, lit) {
         (PrimitiveType::Integer, Literal::Integer(n)) => Some(RuntimeValue::Integer(*n)),
         (PrimitiveType::Float, Literal::Float(f)) => Some(RuntimeValue::Float(*f)),
         (PrimitiveType::String, Literal::String(s)) => Some(RuntimeValue::String(Arc::from(s.clone()))),

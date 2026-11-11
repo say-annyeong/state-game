@@ -64,13 +64,13 @@ impl GenericTypeInterner {
         Self::default()
     }
 
-    pub fn intern(&mut self, ty: TypeExpression) -> GenericTypeIdentifier {
-        if let Some(id) = self.map.get(&ty) {
+    pub fn intern(&mut self, expression_type: TypeExpression) -> GenericTypeIdentifier {
+        if let Some(id) = self.map.get(&expression_type) {
             return *id;
         }
         let id = GenericTypeIdentifier(self.types.len() as u64);
-        self.types.push(ty.clone());
-        self.map.insert(ty, id);
+        self.types.push(expression_type.clone());
+        self.map.insert(expression_type, id);
         id
     }
 
@@ -94,13 +94,13 @@ impl ConcreteTypeInterner {
         Self::default()
     }
 
-    pub fn intern(&mut self, ty: ConcreteType) -> NonGenericTypeIdentifier {
-        if let Some(id) = self.map.get(&ty) {
+    pub fn intern(&mut self, concrete_type: ConcreteType) -> NonGenericTypeIdentifier {
+        if let Some(id) = self.map.get(&concrete_type) {
             return *id;
         }
         let id = NonGenericTypeIdentifier(self.types.len() as u64);
-        self.types.push(ty.clone());
-        self.map.insert(ty, id);
+        self.types.push(concrete_type.clone());
+        self.map.insert(concrete_type, id);
         id
     }
 
@@ -116,25 +116,25 @@ impl ConcreteTypeInterner {
 /// Convert a ConcreteType into a TypeExpression using an interner for
 /// any nested node IDs that need to be re-registered.
 pub fn concrete_to_expression(
-    ct: &ConcreteType,
+    concrete_type: &ConcreteType,
     concrete_interner: &ConcreteTypeInterner,
     generic_interner: &mut GenericTypeInterner,
 ) -> TypeExpression {
-    match ct {
+    match concrete_type {
         ConcreteType::Primitive(p) => TypeExpression::Primitive(*p),
         ConcreteType::Vector(inner_id) => {
             let inner_ct = concrete_interner.get(*inner_id).cloned()
                 .unwrap_or(ConcreteType::Primitive(PrimitiveType::Unit));
             let inner_te = concrete_to_expression(&inner_ct, concrete_interner, generic_interner);
-            let gid = generic_interner.intern(inner_te);
-            TypeExpression::Vector(gid)
+            let generic_identifier = generic_interner.intern(inner_te);
+            TypeExpression::Vector(generic_identifier)
         }
         ConcreteType::Option(inner_id) => {
             let inner_ct = concrete_interner.get(*inner_id).cloned()
                 .unwrap_or(ConcreteType::Primitive(PrimitiveType::Unit));
             let inner_te = concrete_to_expression(&inner_ct, concrete_interner, generic_interner);
-            let gid = generic_interner.intern(inner_te);
-            TypeExpression::Option(gid)
+            let generic_identifier = generic_interner.intern(inner_te);
+            TypeExpression::Option(generic_identifier)
         }
         ConcreteType::Result { ok: ok_id, err: err_id } => {
             let ok_ct = concrete_interner.get(*ok_id).cloned()

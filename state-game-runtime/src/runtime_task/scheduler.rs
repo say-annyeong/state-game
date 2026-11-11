@@ -1,6 +1,8 @@
-use std::collections::HashMap;
-use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::{
+    collections::HashMap,
+    sync::Arc,
+    time::{Duration, Instant}
+};
 
 use crossbeam_channel::unbounded;
 use dashmap::DashMap;
@@ -17,15 +19,11 @@ use crate::runtime_task::{
     verifier::virtual_machine_instruction_metadata::ConcreteFunctionMetadata,
 };
 
-// ---------------------------------------------------------------------------
-// SchedulerOption
-// ---------------------------------------------------------------------------
-
 pub struct SchedulerOption {
-    /// CPU 사용률 상한 (0–100). 현재는 tick 내부 루프 반복 횟수에 영향을 주지
-    /// 않으며, 향후 OS 수준 CPU 측정을 붙일 자리를 예약한다.
+    /// CPU 사용률 상한 (0–100).
+    /// 향후 OS 수준 CPU 측정을 붙일 자리를 예약한다.
     pub max_cpu_using: u8,
-    /// 메모리 상한(MB). 슬롯 수 기반 근사치로 판단한다.
+    /// 메모리 상한(MB).
     pub max_ram_using: u64,
     /// 하나의 tick이 소비할 수 있는 최대 실행 시간.
     /// `Duration::MAX`로 설정하면 사실상 제한 없음.
@@ -44,7 +42,7 @@ impl Default for SchedulerOption {
     }
 }
 
-pub struct NonExhaustive;
+struct NonExhaustive;
 
 // ---------------------------------------------------------------------------
 // 태스크 상태
@@ -94,7 +92,7 @@ pub struct Scheduler {
     /// 수정 가능한 네임스페이스 목록.
     modification_namespace_list: Arc<[Namespace]>,
 
-    /// 이벤트 로그 수신자 (외부 관찰용; 현재는 드랍해도 무방).
+    /// 이벤트 로그 수신자
     _log_receiver: crossbeam_channel::Receiver<RuntimeTaskEvent>,
     log_sender: crossbeam_channel::Sender<RuntimeTaskEvent>,
 }
@@ -130,8 +128,8 @@ impl Scheduler {
         function_identifier: FunctionIdentifier,
         input_slots: Vec<Arc<RuntimeValue>>,
     ) -> Option<RuntimeTaskIdentifier> {
-        let (meta, instructions) = self.find_function(function_identifier)?;
-        let slot_count = meta.slot_types.len();
+        let (metadata, instructions) = self.find_function(function_identifier)?;
+        let slot_count = metadata.slot_types.len();
 
         let id = self.alloc_task_id();
         let (sched_tx, sched_rx) = unbounded();
@@ -188,13 +186,13 @@ impl Scheduler {
         let mut traps: Vec<(RuntimeTaskIdentifier, RuntimeTaskTrap)> = Vec::new();
 
         // Ready 태스크 목록을 미리 수집 (borrow 분리)
-        let ready_ids: Vec<RuntimeTaskIdentifier> = self
+        let ready_task_identifiers: Vec<RuntimeTaskIdentifier> = self
             .states
             .iter()
             .filter_map(|(id, state)| matches!(state, TaskState::Ready).then_some(*id))
             .collect();
 
-        'outer: for task_id in ready_ids {
+        'outer: for task_id in ready_task_identifiers {
             // ── 시간 제한 확인 ────────────────────────────────────────────────
             if Instant::now() >= deadline {
                 break 'outer;
@@ -228,8 +226,8 @@ impl Scheduler {
                     destination_slots,
                 }) => {
                     match self.find_function(function_identifier) {
-                        Some((meta, instructions)) => {
-                            let slot_count = meta.slot_types.len();
+                        Some((metadata, instructions)) => {
+                            let slot_count = metadata.slot_types.len();
                             let child_id = self.alloc_task_id();
                             let (sched_tx, sched_rx) = unbounded();
 
@@ -335,8 +333,8 @@ impl Scheduler {
     ) -> Option<(&ConcreteFunctionMetadata, Arc<[ConcreteInstruction]>)> {
         self.functions
             .iter()
-            .find(|(meta, _)| meta.function_identifier == id)
-            .map(|(meta, instrs)| (meta, instrs.clone()))
+            .find(|(metadata, _)| metadata.function_identifier == id)
+            .map(|(metadata, instrs)| (metadata, instrs.clone()))
     }
 
     /// 새 태스크 식별자를 발급한다.

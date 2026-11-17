@@ -8,9 +8,12 @@ mod mod_metadata;
 use std::collections::HashMap;
 use std::sync::Arc;
 
+
+/// naming rule snake_case
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
 pub struct Identifier(pub Arc<str>);
 
+/// naming rule snake_case
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
 pub struct Namespace(pub Arc<str>);
 
@@ -127,14 +130,16 @@ enum InputVariationCustomValue {
     Map(HashMap<String, Self>),
 }
 
-
-
+/*
 pub trait StateTransition {
     fn transition(state, input: InputVariation) -> state;
 }
+*/
 
 /*
 최종 외부 노출 함수
 (State, Input) -> Option<State>를 만드는 함수는 Input을 검증하고, 올바르면 Some, 올바르지 않으면 None
 State -> Vec<InputSpace>을 만드는 함수는 State에서 입력 가능한 모든 공간을 추출, 그리고 그 대상이 다른경우 다른 인덱스를 가짐
+
+State는 Struct, Trait중에서 뭐여야 할까나...
 */
